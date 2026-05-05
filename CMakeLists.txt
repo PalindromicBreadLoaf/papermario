@@ -19,7 +19,7 @@ set(CMAKE_C_EXTENSIONS OFF)
 if(MSVC)
     add_compile_options(/W3 /wd4996)
 else()
-    add_compile_options(-Wall -Wextra -Wno-unused-parameter)
+    add_compile_options(-Wall -Wextra -Wno-unused-parameter -Wno-builtin-declaration-mismatch)
 endif()
 
 # Include paths
@@ -55,8 +55,13 @@ target_sources(papermario PRIVATE
     src/pc/os/os_mesg.c
     src/pc/os/os_vi.c
     src/pc/os/os_cont.c
+    src/pc/os/os_pi.c
+    src/pc/os/os_sp.c
 
     src/pc/nusys/nu_cont.c
+    src/pc/nusys/nu_sched.c
+    src/pc/nusys/nu_gfx.c
+    src/pc/nusys/nu_pi.c
 )
 
 # Dependencies
