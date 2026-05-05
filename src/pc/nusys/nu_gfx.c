@@ -2,6 +2,8 @@
 #include <PR/os_thread.h>
 #include <PR/os_vi.h>
 #include <nu/nusys.h>
+#include "gbi_interpreter.h"
+#include "gl_backend.h"
 
 u16           **nuGfxCfb           = NULL;
 u16            *nuGfxCfb_ptr       = NULL;
@@ -53,8 +55,12 @@ void nuGfxTaskMgrInit(void) {
 }
 
 void nuGfxTaskStart(Gfx *gfxList, u32 gfxListSize, u32 ucode, u32 flag) {
-    (void)gfxList; (void)gfxListSize; (void)ucode;
+    (void)gfxListSize; (void)ucode;
     nuGfxTaskSpool++;
+
+    gl_backend_start_frame();
+    gbi_run_dl(gfxList);
+    gl_backend_end_frame();
 
     if (flag & NU_SC_SWAPBUFFER) {
         if (nuGfxSwapCfbFunc && nuGfxCfbNum > 0) {
