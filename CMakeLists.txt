@@ -28,6 +28,7 @@ endif()
 include_directories(
     ${CMAKE_SOURCE_DIR}/src/pc/include
     ${CMAKE_SOURCE_DIR}/include
+)
 
 # Global compile definitions
 
@@ -50,6 +51,8 @@ target_sources(papermario PRIVATE
     src/pc/os/os_convert.c
     src/pc/os/os_time.c
     src/pc/os/os_system.c
+    src/pc/os/os_thread.c
+    src/pc/os/os_mesg.c
 )
 
 # Dependencies
