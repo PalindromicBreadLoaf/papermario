@@ -1,8 +1,68 @@
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
 #include "gbi_interpreter.h"
 #include "rdp_state.h"
 #include "gl_backend.h"
+
+// Row-major 4x4 multiply.  res may alias a or b.
+static void gfx_matrix_mul(float res[4][4], const float a[4][4], const float b[4][4]) {
+    float tmp[4][4];
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            tmp[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] +
+                        a[i][2] * b[2][j] + a[i][3] * b[3][j];
+        }
+    }
+    memcpy(res, tmp, sizeof(tmp));
+}
+
+static void gfx_sp_matrix(u8 params, const s32 *addr) {
+    float matrix[4][4];
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j += 2) {
+            s32 int_part  = addr[i * 2 + j / 2];
+            u32 frac_part = (u32)addr[8 + i * 2 + j / 2];
+            matrix[i][j]     = (s32)((int_part  & 0xffff0000u) | (frac_part >> 16))         / 65536.0f;
+            matrix[i][j + 1] = (s32)(((u32)int_part << 16)     | (frac_part & 0x0000ffffu)) / 65536.0f;
+        }
+    }
+
+    if (params & G_MTX_PROJECTION) {
+        if (params & G_MTX_LOAD) {
+            memcpy(g_rsp.P_matrix, matrix, sizeof(matrix));
+        } else {
+            gfx_matrix_mul(g_rsp.P_matrix, matrix, g_rsp.P_matrix);
+        }
+    } else {
+        if ((params & G_MTX_PUSH) && g_rsp.modelview_depth < 11) {
+            memcpy(g_rsp.modelview_stack[g_rsp.modelview_depth],
+                   g_rsp.modelview_stack[g_rsp.modelview_depth - 1],
+                   sizeof(matrix));
+            g_rsp.modelview_depth++;
+        }
+        if (params & G_MTX_LOAD) {
+            memcpy(g_rsp.modelview_stack[g_rsp.modelview_depth - 1], matrix, sizeof(matrix));
+        } else {
+            gfx_matrix_mul(g_rsp.modelview_stack[g_rsp.modelview_depth - 1],
+                           matrix,
+                           g_rsp.modelview_stack[g_rsp.modelview_depth - 1]);
+        }
+        g_rsp.lights_dirty = true;
+    }
+    gfx_matrix_mul(g_rsp.MP_matrix,
+                   g_rsp.modelview_stack[g_rsp.modelview_depth - 1],
+                   g_rsp.P_matrix);
+}
+
+static void gfx_sp_pop_matrix(u32 count) {
+    while (count-- > 0 && g_rsp.modelview_depth > 1) {
+        g_rsp.modelview_depth--;
+    }
+    gfx_matrix_mul(g_rsp.MP_matrix,
+                   g_rsp.modelview_stack[g_rsp.modelview_depth - 1],
+                   g_rsp.P_matrix);
+}
 
 // TODO: Unstub these
 static void gfx_sp_vertex(const Gfx *cmd)            { (void)cmd; }
@@ -12,8 +72,6 @@ static void gfx_sp_branch_z(const Gfx *cmd)          { (void)cmd; }
 static void gfx_sp_tri1(const Gfx *cmd)              { (void)cmd; }
 static void gfx_sp_tri2(const Gfx *cmd)              { (void)cmd; }
 static void gfx_sp_quad(const Gfx *cmd)              { (void)cmd; }
-static void gfx_sp_matrix(const Gfx *cmd)            { (void)cmd; }
-static void gfx_sp_pop_matrix(const Gfx *cmd)        { (void)cmd; }
 static void gfx_sp_geometry_mode(const Gfx *cmd)     { (void)cmd; }
 static void gfx_sp_texture(const Gfx *cmd)           { (void)cmd; }
 static void gfx_sp_move_mem(const Gfx *cmd)          { (void)cmd; }
@@ -90,8 +148,8 @@ void gbi_run_dl(Gfx *dl) {
             case G_TRI1:           gfx_sp_tri1(cmd);              break;
             case G_TRI2:           gfx_sp_tri2(cmd);              break;
             case G_QUAD:           gfx_sp_quad(cmd);              break;
-            case G_MTX:            gfx_sp_matrix(cmd);            break;
-            case G_POPMTX:         gfx_sp_pop_matrix(cmd);        break;
+            case G_MTX:    gfx_sp_matrix((u8)(C0(0, 8) ^ G_MTX_PUSH), (const s32 *)(uintptr_t)cmd->words.w1); break;
+            case G_POPMTX: gfx_sp_pop_matrix(cmd->words.w1 / 64); break;
             case G_GEOMETRYMODE:   gfx_sp_geometry_mode(cmd);     break;
             case G_TEXTURE:        gfx_sp_texture(cmd);           break;
             case G_MOVEMEM:        gfx_sp_move_mem(cmd);          break;
