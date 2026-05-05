@@ -53,6 +53,7 @@ target_sources(papermario PRIVATE
     src/pc/os/os_system.c
     src/pc/os/os_thread.c
     src/pc/os/os_mesg.c
+    src/pc/os/os_vi.c
 )
 
 # Dependencies

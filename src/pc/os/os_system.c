@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <SDL2/SDL.h>
 #include <PR/os_thread.h>
 #include <PR/os_message.h>
 #include <PR/os_exception.h>
@@ -27,7 +28,9 @@ OSIntMask osGetIntMask(void) {
     return __OSGlobalIntMask;
 }
 
-void __osInitialize_common(void) {}
+void __osInitialize_common(void) {
+    SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER | SDL_INIT_AUDIO);
+}
 void __osInitialize_autodetect(void) {}
 void __osInitialize_msp(void) {}
 void __osInitialize_kmc(void) {}
