@@ -12,17 +12,15 @@ u32             nuGfxCfbCounter    = 0;
 volatile u32    nuGfxTaskSpool     = 0;
 NUScTask        nuGfxTask[NU_GFX_TASK_NUM];
 NUUcode        *nuGfxUcode         = NULL;
-NUGfxSwapCfbFunc nuGfxSwapCfbFunc = NULL;
-NUGfxFunc       nuGfxFunc         = NULL;
-NUGfxPreNMIFunc nuGfxPreNMIFunc   = NULL;
+NUGfxSwapCfbFunc nuGfxSwapCfbFunc  = NULL;
+NUGfxFunc       nuGfxFunc          = NULL;
+NUGfxPreNMIFunc nuGfxPreNMIFunc    = NULL;
 OSThread        nuGfxThread;
 u8              nuYieldBuf[NU_GFX_YIELD_BUF_SIZE];
 
 // nuGfxMesgQ is used by the gfx thread; nuGfxTaskEndFunc is internal.
 OSMesgQueue     nuGfxMesgQ;
 static OSMesg   sGfxMesgBuf[NU_GFX_MESGS];
-
-// ---- Gfx thread ----
 
 static void gfx_thread(void *arg) {
     NUScClient gfxClient;
@@ -50,8 +48,6 @@ void nuGfxThreadStart(void) {
     osStartThread(&nuGfxThread);
 }
 
-// ---- Task management ----
-
 void nuGfxTaskMgrInit(void) {
     nuGfxTaskSpool = 0;
 }
@@ -59,8 +55,6 @@ void nuGfxTaskMgrInit(void) {
 void nuGfxTaskStart(Gfx *gfxList, u32 gfxListSize, u32 ucode, u32 flag) {
     (void)gfxList; (void)gfxListSize; (void)ucode;
     nuGfxTaskSpool++;
-
-    // Phase 4 will interpret gfxList here.
 
     if (flag & NU_SC_SWAPBUFFER) {
         if (nuGfxSwapCfbFunc && nuGfxCfbNum > 0) {
@@ -83,8 +77,6 @@ void nuGfxTaskAllEndWait(void) {
     }
 }
 
-// ---- Framebuffer / Z-buffer ----
-
 void nuGfxSetCfb(u16 **framebuf, u32 framebufnum) {
     nuGfxCfb        = framebuf;
     nuGfxCfbNum     = framebufnum;
@@ -97,8 +89,6 @@ void nuGfxSetCfb(u16 **framebuf, u32 framebufnum) {
 void nuGfxSwapCfb(void *task) {
     osViSwapBuffer(((NUScTask *)task)->framebuffer);
 }
-
-// ---- Callbacks ----
 
 void nuGfxFuncSet(NUGfxFunc func) {
     nuGfxTaskAllEndWait();
@@ -113,8 +103,6 @@ void nuGfxSwapCfbFuncSet(NUGfxSwapCfbFunc func) {
     nuGfxSwapCfbFunc = func;
 }
 
-// ---- Display on/off ----
-
 void nuGfxDisplayOn(void) {
     nuGfxDisplay = NU_GFX_DISPLAY_ON_TRIGGER;
     osViBlack(FALSE);
@@ -124,8 +112,6 @@ void nuGfxDisplayOff(void) {
     nuGfxDisplay = NU_GFX_DISPLAY_OFF;
     osViBlack(TRUE);
 }
-
-// ---- Retrace wait ----
 
 void nuGfxRetraceWait(u32 retrace_num) {
     NUScClient client;
@@ -139,8 +125,6 @@ void nuGfxRetraceWait(u32 retrace_num) {
     }
     nuScRemoveClient(&client);
 }
-
-// ---- Top-level init ----
 
 void nuGfxInitEX2(void) {
     nuGfxSwapCfbFuncSet(nuGfxSwapCfb);

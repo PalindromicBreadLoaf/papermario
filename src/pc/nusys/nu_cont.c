@@ -12,7 +12,7 @@ u32          nuContDataLockKey = 0;
 void        *nuContReadFunc    = NULL;
 void        *nuContPfs[MAXCONTROLLERS];
 
-// Detect connected controllers via osContInit, return pattern.
+// Detect connected controllers via osContInit
 u8 nuSiMgrInit(void) {
     OSMesgQueue mq;
     OSMesg      buf;
@@ -31,14 +31,14 @@ u8 nuSiMgrInit(void) {
 }
 
 u8 nuContMgrInit(void) {
-    // On PC the contRetrace callback is not needed; nuContDataGet polls directly.
+    // nuContDataGet polls directly.
     return (u8)(nuContNum > 0 ? 1 : 0);
 }
 
 void nuContPakMgrInit(void) {}
 void nuContRmbMgrInit(void) {}
 
-// nuContInit: public entry point called from the game's boot sequence.
+// Public entry point called from the game's boot sequence.
 u8 nuContInit(void) {
     u8 pattern = nuSiMgrInit();
     nuContMgrInit();
