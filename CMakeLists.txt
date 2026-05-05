@@ -54,5 +54,39 @@ target_include_directories(papermario PRIVATE
     ${CMAKE_SOURCE_DIR}/src/pc/include
 )
 
+# Dependencies
+find_package(OpenGL REQUIRED)
+find_package(SDL2 REQUIRED)
+find_package(SDL2_mixer REQUIRED)
+
+# Prefer a system install for GLM, but fall back to FetchContent so the
+# build works without manual setup on any platform.
+find_package(glm QUIET)
+if(NOT glm_FOUND)
+    include(FetchContent)
+    FetchContent_Declare(
+        glm
+        GIT_REPOSITORY https://github.com/g-truc/glm.git
+        GIT_TAG        1.0.1
+        GIT_SHALLOW    TRUE
+    )
+    # Silence deprecation warnings from GLM's own CMakeLists.txt.
+    set(CMAKE_WARN_DEPRECATED OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(glm)
+    set(CMAKE_WARN_DEPRECATED ON CACHE BOOL "" FORCE)
+endif()
+
+target_link_libraries(papermario PRIVATE
+    OpenGL::GL
+    SDL2::SDL2
+    SDL2_mixer::SDL2_mixer
+    glm::glm
+)
+
+# SDL2::SDL2main provides the WinMain→main shim on Windows; Not needed on good OSes.
+if(TARGET SDL2::SDL2main)
+    target_link_libraries(papermario PRIVATE SDL2::SDL2main)
+endif()
+
 # Subdirectories
 # add_subdirectory(src/pc)
