@@ -27,6 +27,7 @@ endif()
 
 include_directories(
     ${CMAKE_SOURCE_DIR}/src/pc/include
+    ${CMAKE_SOURCE_DIR}/src/pc/gfx
     ${CMAKE_SOURCE_DIR}/include
 )
 
@@ -36,6 +37,7 @@ add_compile_definitions(
     BUILD_PC
     VERSION_US=1
     _LANGUAGE_C      # gates N64 libultra type definitions in include/PR/*.h
+    F3DEX_GBI_2      # Paper Mario uses the F3DEX2 RSP microcode
 )
 
 # PC executable
@@ -60,6 +62,10 @@ target_sources(papermario PRIVATE
     src/pc/os/os_sp.c
 
     src/pc/gfx/tex_conv.c
+    src/pc/gfx/rdp_state.c
+    src/pc/gfx/gbi_interpreter.c
+    src/pc/gfx/gl_backend.c
+    src/pc/gfx/texture_cache.c
 
     src/pc/nusys/nu_cont.c
     src/pc/nusys/nu_sched.c
