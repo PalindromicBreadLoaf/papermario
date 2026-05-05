@@ -23,21 +23,18 @@ else()
 endif()
 
 # Include paths
-# These let existing game headers (#include "common.h", <PR/os.h>, etc.) resolve
-# without modification. PC-side headers will be added shadow the N64 headers
-# where needed.
+# src/pc/include comes first so its headers shadow the N64 originals in include/.
 
 include_directories(
+    ${CMAKE_SOURCE_DIR}/src/pc/include
     ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/include/libc
-    ${CMAKE_SOURCE_DIR}/include/gcc
-)
 
 # Global compile definitions
 
 add_compile_definitions(
     BUILD_PC
     VERSION_US=1
+    _LANGUAGE_C      # gates N64 libultra type definitions in include/PR/*.h
 )
 
 # PC executable
@@ -48,10 +45,11 @@ add_executable(papermario)
 # This is just to keep CMake happy.
 target_sources(papermario PRIVATE
     src/pc/main_pc.c
-)
 
-target_include_directories(papermario PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/pc/include
+    src/pc/os/os_cache.c
+    src/pc/os/os_convert.c
+    src/pc/os/os_time.c
+    src/pc/os/os_system.c
 )
 
 # Dependencies
