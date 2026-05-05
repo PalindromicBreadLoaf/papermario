@@ -46,6 +46,7 @@ add_executable(papermario)
 # This is just to keep CMake happy.
 target_sources(papermario PRIVATE
     src/pc/main_pc.c
+    src/pc/asset_loader.c
 
     src/pc/os/os_cache.c
     src/pc/os/os_convert.c

@@ -3,7 +3,6 @@
 
 // PC-compatible replacement for include/PR/ultratypes.h.
 // The N64 version uses `unsigned long` for u32, which is 8 bytes on x86-64.
-// Here we use fixed-width types via <stdint.h> so the sizes match the N64.
 
 #include <stddef.h>
 #include <stdint.h>
