@@ -59,6 +59,8 @@ target_sources(papermario PRIVATE
     src/pc/os/os_pi.c
     src/pc/os/os_sp.c
 
+    src/pc/gfx/tex_conv.c
+
     src/pc/nusys/nu_cont.c
     src/pc/nusys/nu_sched.c
     src/pc/nusys/nu_gfx.c
