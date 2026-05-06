@@ -61,6 +61,7 @@ target_sources(papermario PRIVATE
     src/pc/os/os_pi.c
     src/pc/os/os_sp.c
 
+    src/pc/gfx/glad.c
     src/pc/gfx/tex_conv.c
     src/pc/gfx/rdp_state.c
     src/pc/gfx/gbi_interpreter.c
