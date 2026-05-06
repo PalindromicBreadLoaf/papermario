@@ -32,4 +32,8 @@ extern int gfx_use_tex;
 // Shut down SDL2 and destroy the GL context.
 void gl_backend_shutdown(void);
 
+// Current window dimensions in pixels, updated every frame.
+extern int gl_window_width;
+extern int gl_window_height;
+
 #endif /* GL_BACKEND_H */

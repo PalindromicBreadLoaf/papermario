@@ -99,6 +99,8 @@ float  gfx_buf_vbo[GFX_MAX_BUFFERED * 3 * GFX_FLOATS_PER_VTX];
 size_t gfx_buf_vbo_len      = 0;
 size_t gfx_buf_vbo_num_tris = 0;
 int    gfx_use_tex          = 0;
+int    gl_window_width      = 640;
+int    gl_window_height     = 480;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -161,6 +163,7 @@ void gl_backend_init(const char *title, int width, int height) {
         abort();
     }
 
+    SDL_GetWindowSize(s_window, &gl_window_width, &gl_window_height);
     SDL_GL_SetSwapInterval(1);
 
     if (!gladLoadGL((GLADloadfunc)SDL_GL_GetProcAddress)) {
@@ -238,6 +241,7 @@ void gl_backend_init(const char *title, int width, int height) {
 }
 
 void gl_backend_start_frame(void) {
+    SDL_GetWindowSize(s_window, &gl_window_width, &gl_window_height);
     glDisable(GL_SCISSOR_TEST);
     glDepthMask(GL_TRUE);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);

@@ -185,7 +185,7 @@ static void gfx_sp_vertex(int n, int dest, const Vtx *src) {
 static void gfx_apply_render_state(void) {
     u32 oml = g_rdp.other_mode_l;
 
-    if (oml & Z_CMP)
+    if ((oml & Z_CMP) && (g_rsp.geometry_mode & G_ZBUFFER))
         glEnable(GL_DEPTH_TEST);
     else
         glDisable(GL_DEPTH_TEST);
@@ -246,6 +246,18 @@ static void gfx_ensure_textures(void) {
     }
 }
 
+static void gfx_ensure_viewport(void) {
+    if (!g_rdp.viewport_dirty) return;
+    gfx_flush();
+    g_rdp.viewport_dirty = false;
+    glViewport((GLint)g_rdp.viewport.x, (GLint)g_rdp.viewport.y,
+               (GLsizei)g_rdp.viewport.w, (GLsizei)g_rdp.viewport.h);
+    if (g_rdp.scissor.w > 0.0f && g_rdp.scissor.h > 0.0f) {
+        glScissor((GLint)g_rdp.scissor.x, (GLint)g_rdp.scissor.y,
+                  (GLsizei)g_rdp.scissor.w, (GLsizei)g_rdp.scissor.h);
+    }
+}
+
 static void gfx_sp_tri1(u8 v0, u8 v1, u8 v2) {
     LoadedVertex *lv[3] = {
         &g_rsp.loaded_vertices[v0],
@@ -273,6 +285,7 @@ static void gfx_sp_tri1(u8 v0, u8 v1, u8 v2) {
         }
     }
 
+    gfx_ensure_viewport();
     gfx_ensure_blend_state();
     gfx_ensure_textures();
     if (gfx_buf_vbo_num_tris == GFX_MAX_BUFFERED) gfx_flush();
@@ -345,7 +358,20 @@ static void gfx_sp_move_mem(const Gfx *cmd) {
     int        offset = (int)C0(8, 8) * 8;
     const void *data  = (const void *)(uintptr_t)cmd->words.w1;
 
-    if (index == G_MV_LIGHT) {
+    if (index == G_MV_VIEWPORT) {
+        const Vp_t *vp = (const Vp_t *)data;
+        float rx = (gl_window_width  > 0) ? (float)gl_window_width  / 320.0f : 2.0f;
+        float ry = (gl_window_height > 0) ? (float)gl_window_height / 240.0f : 2.0f;
+        float w  = 2.0f * vp->vscale[0] / 4.0f;
+        float h  = 2.0f * vp->vscale[1] / 4.0f;
+        float x  = vp->vtrans[0] / 4.0f - w / 2.0f;
+        float y  = 240.0f - (vp->vtrans[1] / 4.0f + h / 2.0f);
+        g_rdp.viewport.x = x * rx;
+        g_rdp.viewport.y = y * ry;
+        g_rdp.viewport.w = w * rx;
+        g_rdp.viewport.h = h * ry;
+        g_rdp.viewport_dirty = true;
+    } else if (index == G_MV_LIGHT) {
         // offset 0 and 24 are the lookat entries; lights start at offset 48.
         int slot = offset / 24 - 2;
         if (slot >= 0 && slot <= GFX_MAX_LIGHTS) {
@@ -483,12 +509,40 @@ static void gfx_rdp_load_tlut(const Gfx *cmd) {
     (void)cmd;
     g_rdp.tlut = g_rdp.tex_to_load.addr;
 }
-static void gfx_rdp_fill_rect(const Gfx *cmd)        { (void)cmd; }
+static void gfx_rdp_fill_rect(const Gfx *cmd) {
+    // When the game clears the Z-buffer it sets SETCIMG == SETZIMG then issues a
+    // FILLRECT over the whole screen. glClear in gl_backend_start_frame already
+    // handles depth clearing, so skip this case entirely.
+    if (g_rdp.z_buf_addr != NULL && g_rdp.z_buf_addr == g_rdp.color_buf_addr) {
+        return;
+    }
+    (void)cmd;
+}
+
 // cmd points to the G_TEXRECT entry; cmd+1 = RDPHALF_1, cmd+2 = RDPHALF_2.
 static void gfx_rdp_tex_rect(const Gfx *cmd)         { (void)cmd; }
-static void gfx_rdp_set_scissor(const Gfx *cmd)      { (void)cmd; }
-static void gfx_rdp_set_color_image(const Gfx *cmd)  { (void)cmd; }
-static void gfx_rdp_set_z_image(const Gfx *cmd)      { (void)cmd; }
+
+static void gfx_rdp_set_scissor(const Gfx *cmd) {
+    float rx = (gl_window_width  > 0) ? (float)gl_window_width  / 320.0f : 2.0f;
+    float ry = (gl_window_height > 0) ? (float)gl_window_height / 240.0f : 2.0f;
+    float ulx = (float)C0(12, 12);
+    float uly = (float)C0(0,  12);
+    float lrx = (float)C1(12, 12);
+    float lry = (float)C1(0,  12);
+    g_rdp.scissor.x = ulx / 4.0f * rx;
+    g_rdp.scissor.y = (240.0f - lry / 4.0f) * ry;
+    g_rdp.scissor.w = (lrx - ulx) / 4.0f * rx;
+    g_rdp.scissor.h = (lry - uly) / 4.0f * ry;
+    g_rdp.viewport_dirty = true;
+}
+
+static void gfx_rdp_set_color_image(const Gfx *cmd) {
+    g_rdp.color_buf_addr = (void *)(uintptr_t)cmd->words.w1;
+}
+
+static void gfx_rdp_set_z_image(const Gfx *cmd) {
+    g_rdp.z_buf_addr = (void *)(uintptr_t)cmd->words.w1;
+}
 
 static void gfx_rdp_set_blend_color(const Gfx *cmd)  { (void)cmd; }
 
@@ -657,6 +711,7 @@ void gbi_run_dl(Gfx *dl) {
             case G_RDPTILESYNC:
             case G_RDPPIPESYNC:
             case G_RDPLOADSYNC:
+                gfx_flush();
                 break;
 
             default:
