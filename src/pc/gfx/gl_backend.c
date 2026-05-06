@@ -6,11 +6,7 @@
 #include "gl_backend.h"
 #include "rdp_state.h"
 
-// ---------------------------------------------------------------------------
 // GLSL sources (embedded to avoid runtime file-path dependencies).
-// Canonical human-readable copies live in src/pc/gfx/shaders/.
-// ---------------------------------------------------------------------------
-
 static const char *s_vert_src =
     "#version 330 core\n"
     "layout(location = 0) in vec4 a_pos;\n"
@@ -68,10 +64,6 @@ static const char *s_frag_src =
     "    frag_color = color;\n"
     "}\n";
 
-// ---------------------------------------------------------------------------
-// Uniform locations (resolved once after shader link)
-// ---------------------------------------------------------------------------
-
 typedef struct {
     GLint tex0, tex1;
     GLint prim, env, fog_color;
@@ -80,20 +72,13 @@ typedef struct {
     GLint cc_a_a,  cc_a_b,  cc_a_c,  cc_a_d;
 } UniformLocs;
 
-// ---------------------------------------------------------------------------
 // Module state
-// ---------------------------------------------------------------------------
-
 static SDL_Window    *s_window;
 static SDL_GLContext  s_gl_ctx;
 static GLuint         s_vao;
 static GLuint         s_vbo;
 static GLuint         s_program;
 static UniformLocs    s_uloc;
-
-// ---------------------------------------------------------------------------
-// VBO data shared with gbi_interpreter.c
-// ---------------------------------------------------------------------------
 
 float  gfx_buf_vbo[GFX_MAX_BUFFERED * 3 * GFX_FLOATS_PER_VTX];
 size_t gfx_buf_vbo_len      = 0;
@@ -102,10 +87,7 @@ int    gfx_use_tex          = 0;
 int    gl_window_width      = 640;
 int    gl_window_height     = 480;
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
-
 static void GLAPIENTRY gl_debug_callback(GLenum source, GLenum type, GLuint id,
                                           GLenum severity, GLsizei length,
                                           const GLchar *message,
@@ -131,17 +113,14 @@ static GLuint compile_shader(GLenum type, const char *src) {
     return shader;
 }
 
-// ---------------------------------------------------------------------------
 // Public API
-// ---------------------------------------------------------------------------
-
 void gl_backend_init(const char *title, int width, int height) {
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         abort();
     }
 
-    // macOS requires PROFILE_MASK before window creation or it defaults to GL 2.1.
+    // macOS requires PROFILE_MASK before window creation or it defaults to GL 2.1, which is bad
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
