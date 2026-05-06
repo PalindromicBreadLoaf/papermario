@@ -217,7 +217,39 @@ static void gfx_sp_tri1(u8 v0, u8 v1, u8 v2) {
     gfx_buf_vbo_num_tris++;
 }
 
-// TODO: Unstub these
+// Map G_CCMUX_* / G_ACMUX_* constants to the shader source-array index:
+//   0=tex0  1=tex1  2=shade  3=prim  4=env  5=zero  6=one
+//
+// TODO: COMBINED, NOISE, K4, _ALPHA scalars, LOD, etc.
+static int cc_rgb_to_idx(int mux) {
+    switch (mux) {
+        case G_CCMUX_TEXEL0:      return 0;
+        case G_CCMUX_TEXEL1:      return 1;
+        case G_CCMUX_SHADE:       return 2;
+        case G_CCMUX_PRIMITIVE:   return 3;
+        case G_CCMUX_ENVIRONMENT: return 4;
+        // G_CCMUX_1 = G_CCMUX_CENTER = G_CCMUX_SCALE = 6.
+        // Valid as "one" in A/D slots; B/C use it as chroma-key centre / LOD
+        // scale is approximately 1.0 for now.
+        case 6:                   return 6;
+        default:                  return 5;  // zero
+    }
+}
+
+static int cc_alpha_to_idx(int mux) {
+    switch (mux) {
+        case G_ACMUX_TEXEL0:      return 0;
+        case G_ACMUX_TEXEL1:      return 1;
+        case G_ACMUX_SHADE:       return 2;
+        case G_ACMUX_PRIMITIVE:   return 3;
+        case G_ACMUX_ENVIRONMENT: return 4;
+        // G_ACMUX_1 = G_ACMUX_PRIM_LOD_FRAC = 6.
+        case 6:                   return 6;
+        default:                  return 5;  // zero (includes G_ACMUX_0 = 7)
+    }
+}
+
+// TODO: GBI handlers
 static void gfx_sp_modify_vertex(const Gfx *cmd)     { (void)cmd; }
 static void gfx_sp_cull_dl(const Gfx *cmd)           { (void)cmd; }
 static void gfx_sp_branch_z(const Gfx *cmd)          { (void)cmd; }
@@ -233,18 +265,83 @@ static void gfx_rdp_load_tile(const Gfx *cmd)        { (void)cmd; }
 static void gfx_rdp_load_block(const Gfx *cmd)       { (void)cmd; }
 static void gfx_rdp_set_tile_size(const Gfx *cmd)    { (void)cmd; }
 static void gfx_rdp_load_tlut(const Gfx *cmd)        { (void)cmd; }
-static void gfx_rdp_set_combine(const Gfx *cmd)      { (void)cmd; }
-static void gfx_rdp_set_env_color(const Gfx *cmd)    { (void)cmd; }
-static void gfx_rdp_set_prim_color(const Gfx *cmd)   { (void)cmd; }
-static void gfx_rdp_set_blend_color(const Gfx *cmd)  { (void)cmd; }
-static void gfx_rdp_set_fog_color(const Gfx *cmd)    { (void)cmd; }
-static void gfx_rdp_set_fill_color(const Gfx *cmd)   { (void)cmd; }
 static void gfx_rdp_fill_rect(const Gfx *cmd)        { (void)cmd; }
 // cmd points to the G_TEXRECT entry; cmd+1 = RDPHALF_1, cmd+2 = RDPHALF_2.
 static void gfx_rdp_tex_rect(const Gfx *cmd)         { (void)cmd; }
 static void gfx_rdp_set_scissor(const Gfx *cmd)      { (void)cmd; }
 static void gfx_rdp_set_color_image(const Gfx *cmd)  { (void)cmd; }
 static void gfx_rdp_set_z_image(const Gfx *cmd)      { (void)cmd; }
+
+static void gfx_rdp_set_blend_color(const Gfx *cmd)  { (void)cmd; }
+
+// w1 layout for all four: RRGGBBAA
+static void gfx_rdp_set_env_color(const Gfx *cmd) {
+    g_rdp.env_r = (u8)(cmd->words.w1 >> 24);
+    g_rdp.env_g = (u8)(cmd->words.w1 >> 16);
+    g_rdp.env_b = (u8)(cmd->words.w1 >>  8);
+    g_rdp.env_a = (u8)(cmd->words.w1);
+}
+
+// gDPSetPrimColor also encodes minlevel (w0[15:8]) and lodfrac (w0[7:0]);
+// those affect LOD blending and are ignored on the first pass.
+static void gfx_rdp_set_prim_color(const Gfx *cmd) {
+    g_rdp.prim_r = (u8)(cmd->words.w1 >> 24);
+    g_rdp.prim_g = (u8)(cmd->words.w1 >> 16);
+    g_rdp.prim_b = (u8)(cmd->words.w1 >>  8);
+    g_rdp.prim_a = (u8)(cmd->words.w1);
+}
+
+static void gfx_rdp_set_fog_color(const Gfx *cmd) {
+    g_rdp.fog_r = (u8)(cmd->words.w1 >> 24);
+    g_rdp.fog_g = (u8)(cmd->words.w1 >> 16);
+    g_rdp.fog_b = (u8)(cmd->words.w1 >>  8);
+    g_rdp.fog_a = (u8)(cmd->words.w1);
+}
+
+// Fill colour is two packed 16-bit RGBA5551 values (for 16-bit framebuffers).
+// Decode the lower copy and copy to the upper
+static void gfx_rdp_set_fill_color(const Gfx *cmd) {
+    u16 packed = (u16)(cmd->words.w1 & 0xFFFF);
+    u8  r5 = (u8)((packed >> 11) & 0x1F);
+    u8  g5 = (u8)((packed >>  6) & 0x1F);
+    u8  b5 = (u8)((packed >>  1) & 0x1F);
+    u8  a1 = (u8)(packed & 1);
+    // Expand 5-bit → 8-bit: replicate the high bits into the low bits.
+    g_rdp.fill_r = (r5 << 3) | (r5 >> 2);
+    g_rdp.fill_g = (g5 << 3) | (g5 >> 2);
+    g_rdp.fill_b = (b5 << 3) | (b5 >> 2);
+    g_rdp.fill_a = a1 ? 0xFF : 0x00;
+}
+
+static void gfx_rdp_set_combine(const Gfx *cmd) {
+    // Decode cycle-0 sub-fields from the GCCc bit layout:
+    //   w0[23:20] rgb_a  (saRGB0, 4-bit)
+    //   w0[19:15] rgb_c  (mRGB0,  5-bit)
+    //   w0[14:12] a_a    (saA0,   3-bit)
+    //   w0[11:9]  a_c    (mA0,    3-bit)
+    //   w1[31:28] rgb_b  (sbRGB0, 4-bit)
+    //   w1[17:15] rgb_d  (aRGB0,  3-bit)
+    //   w1[14:12] a_b    (sbA0,   3-bit)
+    //   w1[11:9]  a_d    (aA0,    3-bit)
+    // Cycle-1 fields are skipped
+    int rgb_a = (int)((cmd->words.w0 >> 20) & 0xF);
+    int rgb_c = (int)((cmd->words.w0 >> 15) & 0x1F);
+    int a_a   = (int)((cmd->words.w0 >> 12) & 0x7);
+    int a_c   = (int)((cmd->words.w0 >>  9) & 0x7);
+    int rgb_b = (int)((cmd->words.w1 >> 28) & 0xF);
+    int rgb_d = (int)((cmd->words.w1 >> 15) & 0x7);
+    int a_b   = (int)((cmd->words.w1 >> 12) & 0x7);
+    int a_d   = (int)((cmd->words.w1 >>  9) & 0x7);
+
+    g_rdp.cc_rgb_a = cc_rgb_to_idx(rgb_a);
+    g_rdp.cc_rgb_b = cc_rgb_to_idx(rgb_b);
+    g_rdp.cc_rgb_c = cc_rgb_to_idx(rgb_c);
+    g_rdp.cc_rgb_d = cc_rgb_to_idx(rgb_d);
+    g_rdp.cc_a_a   = cc_alpha_to_idx(a_a);
+    g_rdp.cc_a_b   = cc_alpha_to_idx(a_b);
+    g_rdp.cc_a_c   = cc_alpha_to_idx(a_c);
+    g_rdp.cc_a_d   = cc_alpha_to_idx(a_d);
+}
 
 void gbi_init(void) {
     rdp_state_init();

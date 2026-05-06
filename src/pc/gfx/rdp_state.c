@@ -30,4 +30,12 @@ void rdp_state_init(void) {
     g_rsp.lights_dirty = true;
 
     g_rdp.viewport_dirty = true;
+
+    // Default combiner: output = (0 - 0) * 0 + shade = shade.
+    // Slots A/B/C are zero (5); D points at shade (2) for both RGB and alpha.
+    // This produces vertex colour until a real G_SETCOMBINE fires.
+    g_rdp.cc_rgb_a = 5;  g_rdp.cc_rgb_b = 5;
+    g_rdp.cc_rgb_c = 5;  g_rdp.cc_rgb_d = 2;
+    g_rdp.cc_a_a   = 5;  g_rdp.cc_a_b   = 5;
+    g_rdp.cc_a_c   = 5;  g_rdp.cc_a_d   = 2;
 }
