@@ -762,6 +762,147 @@ static void gfx_rdp_set_combine(const Gfx *cmd) {
     g_rdp.cc_a_d   = cc_alpha_to_idx(a_d);
 }
 
+bool gfx_dump_dl = false;
+
+static void gbi_dump_cmd(u8 opcode, const Gfx *cmd) {
+    switch (opcode) {
+        case G_NOOP:      fprintf(stderr, "GBI G_NOOP\n"); break;
+        case G_SPNOOP:    fprintf(stderr, "GBI G_SPNOOP\n"); break;
+        case G_ENDDL:     fprintf(stderr, "GBI G_ENDDL\n"); break;
+        case G_DL:
+            fprintf(stderr, "GBI G_DL %s addr=0x%08X\n",
+                    (cmd->words.w0 >> 16) & 0xFF ? "nopush" : "push",
+                    cmd->words.w1);
+            break;
+        case G_VTX:
+            fprintf(stderr, "GBI G_VTX n=%u v0=%u addr=0x%08X\n",
+                    (cmd->words.w0 >> 12) & 0xFF,
+                    (u8)((cmd->words.w0 >> 1) & 0x7F) - (u8)((cmd->words.w0 >> 12) & 0xFF),
+                    cmd->words.w1);
+            break;
+        case G_TRI1:
+            fprintf(stderr, "GBI G_TRI1 v0=%u v1=%u v2=%u\n",
+                    (cmd->words.w1 >> 16) & 0xFF,
+                    (cmd->words.w1 >>  8) & 0xFF,
+                     cmd->words.w1        & 0xFF);
+            break;
+        case G_TRI2:
+        case G_QUAD:
+            fprintf(stderr, "GBI G_TRI2 [%u %u %u] [%u %u %u]\n",
+                    (cmd->words.w0 >> 16) & 0xFF, (cmd->words.w0 >> 8) & 0xFF, cmd->words.w0 & 0xFF,
+                    (cmd->words.w1 >> 16) & 0xFF, (cmd->words.w1 >> 8) & 0xFF, cmd->words.w1 & 0xFF);
+            break;
+        case G_MTX:
+            fprintf(stderr, "GBI G_MTX params=0x%02X addr=0x%08X\n",
+                    cmd->words.w0 & 0xFF, cmd->words.w1);
+            break;
+        case G_POPMTX:
+            fprintf(stderr, "GBI G_POPMTX n=%u\n", cmd->words.w1 / 64);
+            break;
+        case G_GEOMETRYMODE:
+            fprintf(stderr, "GBI G_GEOMETRYMODE clr=0x%06X set=0x%06X\n",
+                    (cmd->words.w0) & 0xFFFFFF, cmd->words.w1);
+            break;
+        case G_TEXTURE:
+            fprintf(stderr, "GBI G_TEXTURE on=%u tile=%u s=%u t=%u\n",
+                    (cmd->words.w0 >> 1) & 0x7F,
+                    (cmd->words.w0 >> 8) & 0x7,
+                    cmd->words.w1 >> 16, cmd->words.w1 & 0xFFFF);
+            break;
+        case G_MOVEMEM:
+            fprintf(stderr, "GBI G_MOVEMEM idx=0x%02X off=%u addr=0x%08X\n",
+                    cmd->words.w0 & 0xFF,
+                    ((cmd->words.w0 >> 8) & 0xFF) * 8,
+                    cmd->words.w1);
+            break;
+        case G_MOVEWORD:
+            fprintf(stderr, "GBI G_MOVEWORD idx=0x%02X off=0x%04X data=0x%08X\n",
+                    (cmd->words.w0 >> 16) & 0xFF,
+                    cmd->words.w0 & 0xFFFF,
+                    cmd->words.w1);
+            break;
+        case G_SETOTHERMODE_H:
+            fprintf(stderr, "GBI G_SETOTHERMODE_H shift=%u len=%u data=0x%08X\n",
+                    (cmd->words.w0 >> 8) & 0xFF,
+                     cmd->words.w0       & 0xFF,
+                     cmd->words.w1);
+            break;
+        case G_SETOTHERMODE_L:
+            fprintf(stderr, "GBI G_SETOTHERMODE_L shift=%u len=%u data=0x%08X\n",
+                    (cmd->words.w0 >> 8) & 0xFF,
+                     cmd->words.w0       & 0xFF,
+                     cmd->words.w1);
+            break;
+        case G_SETTIMG:
+            fprintf(stderr, "GBI G_SETTIMG fmt=%u siz=%u addr=0x%08X\n",
+                    (cmd->words.w0 >> 21) & 0x7,
+                    (cmd->words.w0 >> 19) & 0x3,
+                     cmd->words.w1);
+            break;
+        case G_SETTILE:
+            fprintf(stderr, "GBI G_SETTILE tile=%u fmt=%u siz=%u\n",
+                    (cmd->words.w1 >> 24) & 0x7,
+                    (cmd->words.w0 >> 21) & 0x7,
+                    (cmd->words.w0 >> 19) & 0x3);
+            break;
+        case G_LOADTILE:
+        case G_LOADBLOCK:
+        case G_SETTILESIZE:
+        case G_LOADTLUT:
+            fprintf(stderr, "GBI 0x%02X w0=0x%08X w1=0x%08X\n", opcode, cmd->words.w0, cmd->words.w1);
+            break;
+        case G_SETCOMBINE:
+            fprintf(stderr, "GBI G_SETCOMBINE w0=0x%08X w1=0x%08X\n", cmd->words.w0, cmd->words.w1);
+            break;
+        case G_SETENVCOLOR:
+            fprintf(stderr, "GBI G_SETENVCOLOR rgba=0x%08X\n", cmd->words.w1);
+            break;
+        case G_SETPRIMCOLOR:
+            fprintf(stderr, "GBI G_SETPRIMCOLOR rgba=0x%08X\n", cmd->words.w1);
+            break;
+        case G_SETBLENDCOLOR:
+            fprintf(stderr, "GBI G_SETBLENDCOLOR rgba=0x%08X\n", cmd->words.w1);
+            break;
+        case G_SETFOGCOLOR:
+            fprintf(stderr, "GBI G_SETFOGCOLOR rgba=0x%08X\n", cmd->words.w1);
+            break;
+        case G_SETFILLCOLOR:
+            fprintf(stderr, "GBI G_SETFILLCOLOR rgba=0x%08X\n", cmd->words.w1);
+            break;
+        case G_FILLRECT:
+            fprintf(stderr, "GBI G_FILLRECT ulx=%u uly=%u lrx=%u lry=%u\n",
+                    (cmd->words.w1 >> 12) & 0xFFF, cmd->words.w1 & 0xFFF,
+                    (cmd->words.w0 >> 12) & 0xFFF, cmd->words.w0 & 0xFFF);
+            break;
+        case G_TEXRECT:
+        case G_TEXRECTFLIP:
+            fprintf(stderr, "GBI G_TEXRECT%s tile=%u ulx=%u uly=%u lrx=%u lry=%u\n",
+                    opcode == G_TEXRECTFLIP ? "FLIP" : "",
+                    (cmd->words.w1 >> 24) & 0x7,
+                    (cmd->words.w1 >> 12) & 0xFFF, cmd->words.w1 & 0xFFF,
+                    (cmd->words.w0 >> 12) & 0xFFF, cmd->words.w0 & 0xFFF);
+            break;
+        case G_SETSCISSOR:
+            fprintf(stderr, "GBI G_SETSCISSOR ulx=%u uly=%u lrx=%u lry=%u\n",
+                    (cmd->words.w0 >> 12) & 0xFFF, cmd->words.w0 & 0xFFF,
+                    (cmd->words.w1 >> 12) & 0xFFF, cmd->words.w1 & 0xFFF);
+            break;
+        case G_SETCIMG:
+            fprintf(stderr, "GBI G_SETCIMG addr=0x%08X\n", cmd->words.w1);
+            break;
+        case G_SETZIMG:
+            fprintf(stderr, "GBI G_SETZIMG addr=0x%08X\n", cmd->words.w1);
+            break;
+        case G_RDPFULLSYNC:  fprintf(stderr, "GBI G_RDPFULLSYNC\n");  break;
+        case G_RDPTILESYNC:  fprintf(stderr, "GBI G_RDPTILESYNC\n");  break;
+        case G_RDPPIPESYNC:  fprintf(stderr, "GBI G_RDPPIPESYNC\n");  break;
+        case G_RDPLOADSYNC:  fprintf(stderr, "GBI G_RDPLOADSYNC\n");  break;
+        default:
+            fprintf(stderr, "GBI 0x%02X w0=0x%08X w1=0x%08X\n", opcode, cmd->words.w0, cmd->words.w1);
+            break;
+    }
+}
+
 void gbi_init(void) {
     rdp_state_init();
 }
@@ -773,6 +914,7 @@ void gbi_run_dl(Gfx *dl) {
 
     while (1) {
         u8 opcode = (u8)(cmd->words.w0 >> 24);
+        if (gfx_dump_dl) gbi_dump_cmd(opcode, cmd);
 
         switch (opcode) {
             case G_NOOP:
