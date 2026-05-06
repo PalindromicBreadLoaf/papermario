@@ -6,6 +6,8 @@
 #include "gbi_interpreter.h"
 #include "gl_backend.h"
 
+void nu_audio_init(void);
+
 #define DEFAULT_ROM_PATH "ver/us/baserom.z64"
 
 int main(int argc, char *argv[]) {
@@ -22,6 +24,7 @@ int main(int argc, char *argv[]) {
 
     asset_loader_init(rom_path);
     audio_pc_init();
+    nu_audio_init();
     gl_backend_init("Paper Mario", 640, 480);
     gbi_init();
     gfx_dump_dl = dump_dl;

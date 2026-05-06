@@ -66,6 +66,9 @@ target_sources(papermario PRIVATE
 
     src/pc/audio/audio_pc.c
     src/pc/audio/vadpcm_dec.c
+    src/pc/audio/audio_mix.c
+
+    src/pc/nusys/nu_audio.c
 )
 
 # Dependencies
