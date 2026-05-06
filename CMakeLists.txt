@@ -100,6 +100,7 @@ target_link_libraries(papermario PRIVATE
     SDL2::SDL2
     SDL2_mixer::SDL2_mixer
     glm::glm
+    m
 )
 
 # SDL2::SDL2main provides the WinMain→main shim on Windows; Not needed on good OSes.

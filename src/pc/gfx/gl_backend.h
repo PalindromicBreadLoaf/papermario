@@ -1,6 +1,16 @@
 #ifndef GL_BACKEND_H
 #define GL_BACKEND_H
 
+#include <stddef.h>
+
+// VBO layout: 10 floats per vertex: x,y,z,w | u,v | r,g,b,a
+#define GFX_MAX_BUFFERED   256
+#define GFX_FLOATS_PER_VTX  10
+
+extern float  gfx_buf_vbo[GFX_MAX_BUFFERED * 3 * GFX_FLOATS_PER_VTX];
+extern size_t gfx_buf_vbo_len;
+extern size_t gfx_buf_vbo_num_tris;
+
 // Create the SDL2 window and OpenGL 3.3 core context.
 void gl_backend_init(const char *title, int width, int height);
 
