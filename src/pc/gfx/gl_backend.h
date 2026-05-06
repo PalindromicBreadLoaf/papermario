@@ -23,6 +23,12 @@ void gl_backend_end_frame(void);
 // Upload the pending vertex batch and issue a draw call, then reset the batch.
 void gfx_flush(void);
 
+// Bind a GL texture to the given unit (0 or 1).
+void gfx_bind_texture(int unit, unsigned int tex_id);
+
+// Number of consecutively-bound texture units (0, 1, or 2); read by gfx_flush.
+extern int gfx_use_tex;
+
 // Shut down SDL2 and destroy the GL context.
 void gl_backend_shutdown(void);
 

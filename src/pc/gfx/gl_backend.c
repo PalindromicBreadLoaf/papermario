@@ -98,6 +98,7 @@ static UniformLocs    s_uloc;
 float  gfx_buf_vbo[GFX_MAX_BUFFERED * 3 * GFX_FLOATS_PER_VTX];
 size_t gfx_buf_vbo_len      = 0;
 size_t gfx_buf_vbo_num_tris = 0;
+int    gfx_use_tex          = 0;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -266,7 +267,7 @@ void gfx_flush(void) {
     // Fog enable comes from the RSP geometry mode bit.
     glUniform1i(s_uloc.use_fog, (g_rsp.geometry_mode & G_FOG) ? 1 : 0);
 
-    glUniform1i(s_uloc.use_tex, 0);
+    glUniform1i(s_uloc.use_tex, gfx_use_tex);
 
     glUniform1i(s_uloc.cc_rgb_a, g_rdp.cc_rgb_a);
     glUniform1i(s_uloc.cc_rgb_b, g_rdp.cc_rgb_b);
@@ -285,6 +286,11 @@ void gfx_flush(void) {
 
     gfx_buf_vbo_len      = 0;
     gfx_buf_vbo_num_tris = 0;
+}
+
+void gfx_bind_texture(int unit, unsigned int tex_id) {
+    glActiveTexture(GL_TEXTURE0 + (GLenum)unit);
+    glBindTexture(GL_TEXTURE_2D, (GLuint)tex_id);
 }
 
 void gl_backend_shutdown(void) {

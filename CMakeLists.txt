@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 project(papermario_pc VERSION 0.1.0 LANGUAGES C)
 
-# -DBUILD_PC=ON selects the host PC build.  The existing Ninja/N64 build is
+# -DBUILD_PC=ON selects the host PC build. The existing Ninja/N64 build is
 # driven by ./configure + ninja and is completely unaffected by this file.
 option(BUILD_PC "Build the PC port (parallel to the N64 Ninja build)" OFF)
 
@@ -9,8 +9,6 @@ if(NOT BUILD_PC)
     message(STATUS "BUILD_PC=OFF - nothing configured. Pass -DBUILD_PC=ON to enable the PC port.")
     return()
 endif()
-
-# Compiler settings
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -22,30 +20,21 @@ else()
     add_compile_options(-Wall -Wextra -Wno-unused-parameter -Wno-builtin-declaration-mismatch)
 endif()
 
-# Include paths
-# src/pc/include comes first so its headers shadow the N64 originals in include/.
-
 include_directories(
     ${CMAKE_SOURCE_DIR}/src/pc/include
     ${CMAKE_SOURCE_DIR}/src/pc/gfx
     ${CMAKE_SOURCE_DIR}/include
 )
 
-# Global compile definitions
-
 add_compile_definitions(
     BUILD_PC
     VERSION_US=1
     _LANGUAGE_C      # gates N64 libultra type definitions in include/PR/*.h
-    F3DEX_GBI_2      # Paper Mario uses the F3DEX2 RSP microcode
+    F3DEX_GBI_2
 )
-
-# PC executable
 
 add_executable(papermario)
 
-# src/pc/main_pc.c will be the real entry point.
-# This is just to keep CMake happy.
 target_sources(papermario PRIVATE
     src/pc/main_pc.c
     src/pc/asset_loader.c
@@ -79,8 +68,6 @@ find_package(OpenGL REQUIRED)
 find_package(SDL2 REQUIRED)
 find_package(SDL2_mixer REQUIRED)
 
-# Prefer a system install for GLM, but fall back to FetchContent so the
-# build works without manual setup on any platform.
 find_package(glm QUIET)
 if(NOT glm_FOUND)
     include(FetchContent)

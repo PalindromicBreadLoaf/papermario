@@ -5,6 +5,12 @@
 #include "gbi_interpreter.h"
 #include "rdp_state.h"
 #include "gl_backend.h"
+#include "texture_cache.h"
+
+// Bit-field extractors for GBI command words.  Both gbi_run_dl and all static
+// handler functions receive a 'cmd' pointer; the macros expand using that name.
+#define C0(pos, width) ((cmd->words.w0 >> (pos)) & ((1u << (width)) - 1u))
+#define C1(pos, width) ((cmd->words.w1 >> (pos)) & ((1u << (width)) - 1u))
 
 // Row-major 4x4 multiply.  res may alias a or b.
 static void gfx_matrix_mul(float res[4][4], const float a[4][4], const float b[4][4]) {
@@ -173,6 +179,39 @@ static void gfx_sp_vertex(int n, int dest, const Vtx *src) {
     }
 }
 
+// If any texture slot is dirty, flush pending triangles (so they keep the old
+// bindings) and then re-upload via the texture cache.
+static void gfx_ensure_textures(void) {
+    if (!g_rdp.textures_dirty[0] && !g_rdp.textures_dirty[1]) return;
+
+    gfx_flush();
+
+    for (int i = 0; i < 2; i++) {
+        if (!g_rdp.textures_dirty[i]) continue;
+        g_rdp.textures_dirty[i] = false;
+
+        if (!g_rdp.loaded[i].addr || !g_rdp.loaded[i].size_bytes) continue;
+
+        TileDesc *td   = &g_rdp.tile[i];
+        u16 width  = (td->lrs > td->uls) ? (u16)((td->lrs - td->uls) / 4 + 1) : 1;
+        u16 height = (td->lrt > td->ult) ? (u16)((td->lrt - td->ult) / 4 + 1) : 1;
+        const u8 *tlut = (td->fmt == G_IM_FMT_CI) ? g_rdp.tlut : NULL;
+
+        unsigned int tex_id = texture_cache_get(g_rdp.loaded[i].addr,
+                                                td->fmt, td->siz,
+                                                g_rdp.loaded[i].size_bytes,
+                                                tlut, width, height,
+                                                td->cms, td->cmt);
+        if (tex_id) gfx_bind_texture(i, tex_id);
+    }
+
+    gfx_use_tex = 0;
+    for (int i = 0; i < 2; i++) {
+        if (g_rdp.loaded[i].addr && g_rdp.loaded[i].size_bytes)
+            gfx_use_tex = i + 1;
+    }
+}
+
 static void gfx_sp_tri1(u8 v0, u8 v1, u8 v2) {
     LoadedVertex *lv[3] = {
         &g_rsp.loaded_vertices[v0],
@@ -200,6 +239,7 @@ static void gfx_sp_tri1(u8 v0, u8 v1, u8 v2) {
         }
     }
 
+    gfx_ensure_textures();
     if (gfx_buf_vbo_num_tris == GFX_MAX_BUFFERED) gfx_flush();
 
     for (int i = 0; i < 3; i++) {
@@ -249,22 +289,116 @@ static int cc_alpha_to_idx(int mux) {
     }
 }
 
+static void gfx_sp_texture(const Gfx *cmd) {
+    g_rsp.tex_scale.s = (u16)C1(16, 16);
+    g_rsp.tex_scale.t = (u16)C1(0, 16);
+}
+
 // TODO: GBI handlers
 static void gfx_sp_modify_vertex(const Gfx *cmd)     { (void)cmd; }
 static void gfx_sp_cull_dl(const Gfx *cmd)           { (void)cmd; }
 static void gfx_sp_branch_z(const Gfx *cmd)          { (void)cmd; }
 static void gfx_sp_geometry_mode(const Gfx *cmd)     { (void)cmd; }
-static void gfx_sp_texture(const Gfx *cmd)           { (void)cmd; }
 static void gfx_sp_move_mem(const Gfx *cmd)          { (void)cmd; }
 static void gfx_sp_move_word(const Gfx *cmd)         { (void)cmd; }
 static void gfx_rdp_set_other_mode_h(const Gfx *cmd) { (void)cmd; }
 static void gfx_rdp_set_other_mode_l(const Gfx *cmd) { (void)cmd; }
-static void gfx_rdp_set_texture_image(const Gfx *cmd){ (void)cmd; }
-static void gfx_rdp_set_tile(const Gfx *cmd)         { (void)cmd; }
-static void gfx_rdp_load_tile(const Gfx *cmd)        { (void)cmd; }
-static void gfx_rdp_load_block(const Gfx *cmd)       { (void)cmd; }
-static void gfx_rdp_set_tile_size(const Gfx *cmd)    { (void)cmd; }
-static void gfx_rdp_load_tlut(const Gfx *cmd)        { (void)cmd; }
+
+static void gfx_rdp_set_texture_image(const Gfx *cmd) {
+    g_rdp.tex_to_load.fmt       = (u8)C0(21, 3);
+    g_rdp.tex_to_load.siz       = (u8)C0(19, 2);
+    g_rdp.tex_to_load.addr      = (const u8 *)(uintptr_t)cmd->words.w1;
+    g_rdp.tex_to_load.tile_slot = 0;
+}
+
+static void gfx_rdp_set_tile(const Gfx *cmd) {
+    u8  fmt  = (u8)C0(21, 3);
+    u8  siz  = (u8)C0(19, 2);
+    u32 line = C0(9, 9);
+    u32 tmem = C0(0, 9);
+    int tile = (int)C1(24, 3);
+    u8  cmt  = (u8)C1(18, 2);
+    u8  cms  = (u8)C1(8,  2);
+
+    g_rdp.tile[tile].fmt         = fmt;
+    g_rdp.tile[tile].siz         = siz;
+    g_rdp.tile[tile].line_bytes  = line * 8;
+    g_rdp.tile[tile].tmem_offset = tmem;
+    g_rdp.tile[tile].cms         = cms;
+    g_rdp.tile[tile].cmt         = cmt;
+
+    if (tile == G_TX_LOADTILE) {
+        g_rdp.tex_to_load.tile_slot = (tmem >= 256u) ? 1 : 0;
+    }
+}
+
+// size_bytes shift per siz for G_LOADBLOCK (Thank you SM64-port)
+// For each siz, lrs is in units of 16-bit TMEM words (except 4b uses bytes).
+static u32 load_block_shift(u8 siz) {
+    switch (siz) {
+        case G_IM_SIZ_4b:  return 0;
+        case G_IM_SIZ_8b:  return 1;
+        case G_IM_SIZ_16b: return 1;
+        case G_IM_SIZ_32b: return 2;
+        default:           return 1;
+    }
+}
+
+static void gfx_rdp_load_block(const Gfx *cmd) {
+    u32 lrs     = C1(12, 12);
+    int slot    = g_rdp.tex_to_load.tile_slot;
+    u32 n_bytes = (lrs + 1u) << load_block_shift(g_rdp.tex_to_load.siz);
+
+    g_rdp.loaded[slot].addr       = g_rdp.tex_to_load.addr;
+    g_rdp.loaded[slot].size_bytes = n_bytes;
+    g_rdp.textures_dirty[slot]    = true;
+}
+
+static u32 texels_to_bytes(u8 siz, u32 texels) {
+    switch (siz) {
+        case G_IM_SIZ_4b:  return (texels + 1u) / 2u;
+        case G_IM_SIZ_8b:  return texels;
+        case G_IM_SIZ_16b: return texels * 2u;
+        case G_IM_SIZ_32b: return texels * 4u;
+        default:           return texels * 2u;
+    }
+}
+
+static void gfx_rdp_load_tile(const Gfx *cmd) {
+    u32 uls  = C0(12, 12);
+    u32 ult  = C0(0,  12);
+    u32 lrs  = C1(12, 12);
+    u32 lrt  = C1(0,  12);
+    int slot = g_rdp.tex_to_load.tile_slot;
+    u32 w    = (lrs - uls) / 4u + 1u;
+    u32 h    = (lrt - ult) / 4u + 1u;
+
+    g_rdp.loaded[slot].addr       = g_rdp.tex_to_load.addr;
+    g_rdp.loaded[slot].size_bytes = texels_to_bytes(g_rdp.tex_to_load.siz, w * h);
+    g_rdp.textures_dirty[slot]    = true;
+}
+
+static void gfx_rdp_set_tile_size(const Gfx *cmd) {
+    int  tile = (int)C1(24, 3);
+    u16  uls  = (u16)C0(12, 12);
+    u16  ult  = (u16)C0(0,  12);
+    u16  lrs  = (u16)C1(12, 12);
+    u16  lrt  = (u16)C1(0,  12);
+
+    g_rdp.tile[tile].uls = uls;
+    g_rdp.tile[tile].ult = ult;
+    g_rdp.tile[tile].lrs = lrs;
+    g_rdp.tile[tile].lrt = lrt;
+
+    if (tile < 2) {
+        g_rdp.textures_dirty[tile] = true;
+    }
+}
+
+static void gfx_rdp_load_tlut(const Gfx *cmd) {
+    (void)cmd;
+    g_rdp.tlut = g_rdp.tex_to_load.addr;
+}
 static void gfx_rdp_fill_rect(const Gfx *cmd)        { (void)cmd; }
 // cmd points to the G_TEXRECT entry; cmd+1 = RDPHALF_1, cmd+2 = RDPHALF_2.
 static void gfx_rdp_tex_rect(const Gfx *cmd)         { (void)cmd; }
@@ -348,9 +482,6 @@ void gbi_init(void) {
 }
 
 void gbi_run_dl(Gfx *dl) {
-#define C0(pos, width) ((cmd->words.w0 >> (pos)) & ((1u << (width)) - 1u))
-#define C1(pos, width) ((cmd->words.w1 >> (pos)) & ((1u << (width)) - 1u))
-
     Gfx *stack[GFX_DL_STACK_DEPTH];
     int  stack_depth = 0;
     Gfx *cmd = dl;
@@ -451,7 +582,4 @@ void gbi_run_dl(Gfx *dl) {
 
         cmd++;
     }
-
-#undef C0
-#undef C1
 }

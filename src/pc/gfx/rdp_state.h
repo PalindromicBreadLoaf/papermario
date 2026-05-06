@@ -78,8 +78,9 @@ typedef struct {
 typedef struct {
     // Texture pipeline
     struct {
-        const u8 *addr;     // pointer into ROM buffer set by gDPSetTextureImage
-        u8        siz;      // G_IM_SIZ_* of the image being loaded
+        const u8 *addr;      // pointer into ROM buffer set by gDPSetTextureImage
+        u8        fmt;       // G_IM_FMT_* of the image being loaded
+        u8        siz;       // G_IM_SIZ_* of the image being loaded
         int       tile_slot; // target tile slot (G_TX_LOADTILE → TMEM half)
     } tex_to_load;
 
