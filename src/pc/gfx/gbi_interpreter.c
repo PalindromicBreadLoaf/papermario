@@ -509,18 +509,165 @@ static void gfx_rdp_load_tlut(const Gfx *cmd) {
     (void)cmd;
     g_rdp.tlut = g_rdp.tex_to_load.addr;
 }
+// Convert U10.2 rectangle coordinates to NDC, build four corner vertices at
+// GFX_MAX_VERTICES+0..3, draw two triangles, then flush before restoring state.
+// Callers are responsible for setting u/v and r/g/b/a on the corner vertices and
+// for saving/restoring any combiner state they override.
+static void gfx_draw_rectangle(s32 ulx, s32 uly, s32 lrx, s32 lry) {
+    u32 saved_omh  = g_rdp.other_mode_h;
+    u32 cycle_type = g_rdp.other_mode_h & (3u << G_MDSFT_CYCLETYPE);
+    if (cycle_type == G_CYC_COPY) {
+        g_rdp.other_mode_h = (g_rdp.other_mode_h & ~(3u << G_MDSFT_TEXTFILT)) | G_TF_POINT;
+    }
+
+    float ulxf = (float)ulx / (4.0f * 160.0f) - 1.0f;
+    float ulyf = -((float)uly / (4.0f * 120.0f)) + 1.0f;
+    float lrxf = (float)lrx / (4.0f * 160.0f) - 1.0f;
+    float lryf = -((float)lry / (4.0f * 120.0f)) + 1.0f;
+
+    LoadedVertex *ul = &g_rsp.loaded_vertices[GFX_MAX_VERTICES + 0];
+    LoadedVertex *ll = &g_rsp.loaded_vertices[GFX_MAX_VERTICES + 1];
+    LoadedVertex *lr = &g_rsp.loaded_vertices[GFX_MAX_VERTICES + 2];
+    LoadedVertex *ur = &g_rsp.loaded_vertices[GFX_MAX_VERTICES + 3];
+
+    ul->x = ulxf; ul->y = ulyf; ul->z = -1.0f; ul->w = 1.0f; ul->clip_rej = 0;
+    ll->x = ulxf; ll->y = lryf; ll->z = -1.0f; ll->w = 1.0f; ll->clip_rej = 0;
+    lr->x = lrxf; lr->y = lryf; lr->z = -1.0f; lr->w = 1.0f; lr->clip_rej = 0;
+    ur->x = lrxf; ur->y = ulyf; ur->z = -1.0f; ur->w = 1.0f; ur->clip_rej = 0;
+
+    // Use the full window viewport and no culling/fog for 2D rects.
+    float saved_vp[4];
+    memcpy(saved_vp, &g_rdp.viewport, sizeof(saved_vp));
+    u32 saved_geom = g_rsp.geometry_mode;
+    g_rdp.viewport.x = 0.0f;
+    g_rdp.viewport.y = 0.0f;
+    g_rdp.viewport.w = (float)gl_window_width;
+    g_rdp.viewport.h = (float)gl_window_height;
+    g_rdp.viewport_dirty = true;
+    g_rsp.geometry_mode = 0;
+
+    gfx_sp_tri1(GFX_MAX_VERTICES + 0, GFX_MAX_VERTICES + 1, GFX_MAX_VERTICES + 3);
+    gfx_sp_tri1(GFX_MAX_VERTICES + 1, GFX_MAX_VERTICES + 2, GFX_MAX_VERTICES + 3);
+    // Flush now so the combiner/use_tex uniforms captured at draw time match this
+    // rect's state, not whatever the caller restores afterward.
+    gfx_flush();
+
+    g_rsp.geometry_mode = saved_geom;
+    memcpy(&g_rdp.viewport, saved_vp, sizeof(saved_vp));
+    g_rdp.viewport_dirty = true;
+    if (cycle_type == G_CYC_COPY) {
+        g_rdp.other_mode_h = saved_omh;
+    }
+}
+
+static void gfx_dp_texture_rectangle(s32 ulx, s32 uly, s32 lrx, s32 lry,
+                                      u8 tile, s16 uls, s16 ult,
+                                      s16 dsdx, s16 dtdy, bool flip) {
+    (void)tile;
+
+    int saved_cc[8] = {
+        g_rdp.cc_rgb_a, g_rdp.cc_rgb_b, g_rdp.cc_rgb_c, g_rdp.cc_rgb_d,
+        g_rdp.cc_a_a,   g_rdp.cc_a_b,   g_rdp.cc_a_c,   g_rdp.cc_a_d,
+    };
+
+    if ((g_rdp.other_mode_h & (3u << G_MDSFT_CYCLETYPE)) == G_CYC_COPY) {
+        // COPY mode: 4 texels/pixel → divide step by 4 to get 1:1 mapping.
+        dsdx >>= 2;
+        // Force output = texel0 (combiner disabled in COPY mode).
+        g_rdp.cc_rgb_a = 5; g_rdp.cc_rgb_b = 5; g_rdp.cc_rgb_c = 5; g_rdp.cc_rgb_d = 0;
+        g_rdp.cc_a_a   = 5; g_rdp.cc_a_b   = 5; g_rdp.cc_a_c   = 5; g_rdp.cc_a_d   = 0;
+        // Off-by-one edge rule: add 1 pixel in U10.2.
+        lrx += 1 << 2;
+        lry += 1 << 2;
+    }
+
+    s32 width  = !flip ? lrx - ulx : lry - uly;
+    s32 height = !flip ? lry - uly : lrx - ulx;
+    float lrs  = (float)(((s32)uls << 7) + (s32)dsdx * width)  / 128.0f;
+    float lrt  = (float)(((s32)ult << 7) + (s32)dtdy * height) / 128.0f;
+
+    LoadedVertex *ul = &g_rsp.loaded_vertices[GFX_MAX_VERTICES + 0];
+    LoadedVertex *ll = &g_rsp.loaded_vertices[GFX_MAX_VERTICES + 1];
+    LoadedVertex *lr = &g_rsp.loaded_vertices[GFX_MAX_VERTICES + 2];
+    LoadedVertex *ur = &g_rsp.loaded_vertices[GFX_MAX_VERTICES + 3];
+
+    ul->r = ll->r = lr->r = ur->r = 255;
+    ul->g = ll->g = lr->g = ur->g = 255;
+    ul->b = ll->b = lr->b = ur->b = 255;
+    ul->a = ll->a = lr->a = ur->a = 255;
+
+    ul->u = (float)uls; ul->v = (float)ult;
+    lr->u = lrs;        lr->v = lrt;
+    if (!flip) {
+        ll->u = (float)uls; ll->v = lrt;
+        ur->u = lrs;        ur->v = (float)ult;
+    } else {
+        ll->u = lrs;        ll->v = (float)ult;
+        ur->u = (float)uls; ur->v = lrt;
+    }
+
+    gfx_draw_rectangle(ulx, uly, lrx, lry);
+
+    g_rdp.cc_rgb_a = saved_cc[0]; g_rdp.cc_rgb_b = saved_cc[1];
+    g_rdp.cc_rgb_c = saved_cc[2]; g_rdp.cc_rgb_d = saved_cc[3];
+    g_rdp.cc_a_a   = saved_cc[4]; g_rdp.cc_a_b   = saved_cc[5];
+    g_rdp.cc_a_c   = saved_cc[6]; g_rdp.cc_a_d   = saved_cc[7];
+}
+
 static void gfx_rdp_fill_rect(const Gfx *cmd) {
-    // When the game clears the Z-buffer it sets SETCIMG == SETZIMG then issues a
-    // FILLRECT over the whole screen. glClear in gl_backend_start_frame already
-    // handles depth clearing, so skip this case entirely.
     if (g_rdp.z_buf_addr != NULL && g_rdp.z_buf_addr == g_rdp.color_buf_addr) {
         return;
     }
-    (void)cmd;
+
+    s32 ulx = (s32)C1(12, 12);
+    s32 uly = (s32)C1(0,  12);
+    s32 lrx = (s32)C0(12, 12);
+    s32 lry = (s32)C0(0,  12);
+
+    u32 mode = g_rdp.other_mode_h & (3u << G_MDSFT_CYCLETYPE);
+    if (mode == G_CYC_COPY || mode == G_CYC_FILL) {
+        lrx += 1 << 2;
+        lry += 1 << 2;
+    }
+
+    LoadedVertex *ul = &g_rsp.loaded_vertices[GFX_MAX_VERTICES + 0];
+    LoadedVertex *ll = &g_rsp.loaded_vertices[GFX_MAX_VERTICES + 1];
+    LoadedVertex *lr = &g_rsp.loaded_vertices[GFX_MAX_VERTICES + 2];
+    LoadedVertex *ur = &g_rsp.loaded_vertices[GFX_MAX_VERTICES + 3];
+    ul->r = ll->r = lr->r = ur->r = g_rdp.fill_r;
+    ul->g = ll->g = lr->g = ur->g = g_rdp.fill_g;
+    ul->b = ll->b = lr->b = ur->b = g_rdp.fill_b;
+    ul->a = ll->a = lr->a = ur->a = g_rdp.fill_a;
+
+    int saved_cc[8] = {
+        g_rdp.cc_rgb_a, g_rdp.cc_rgb_b, g_rdp.cc_rgb_c, g_rdp.cc_rgb_d,
+        g_rdp.cc_a_a,   g_rdp.cc_a_b,   g_rdp.cc_a_c,   g_rdp.cc_a_d,
+    };
+    g_rdp.cc_rgb_a = 5; g_rdp.cc_rgb_b = 5; g_rdp.cc_rgb_c = 5; g_rdp.cc_rgb_d = 2;
+    g_rdp.cc_a_a   = 5; g_rdp.cc_a_b   = 5; g_rdp.cc_a_c   = 5; g_rdp.cc_a_d   = 2;
+
+    gfx_draw_rectangle(ulx, uly, lrx, lry);
+
+    g_rdp.cc_rgb_a = saved_cc[0]; g_rdp.cc_rgb_b = saved_cc[1];
+    g_rdp.cc_rgb_c = saved_cc[2]; g_rdp.cc_rgb_d = saved_cc[3];
+    g_rdp.cc_a_a   = saved_cc[4]; g_rdp.cc_a_b   = saved_cc[5];
+    g_rdp.cc_a_c   = saved_cc[6]; g_rdp.cc_a_d   = saved_cc[7];
 }
 
 // cmd points to the G_TEXRECT entry; cmd+1 = RDPHALF_1, cmd+2 = RDPHALF_2.
-static void gfx_rdp_tex_rect(const Gfx *cmd)         { (void)cmd; }
+static void gfx_rdp_tex_rect(const Gfx *cmd) {
+    bool flip = ((u8)(cmd->words.w0 >> 24) == G_TEXRECTFLIP);
+    s32  lrx  = (s32)((cmd->words.w0 >> 12) & 0xFFF);
+    s32  lry  = (s32)(cmd->words.w0 & 0xFFF);
+    u8   tile = (u8)((cmd->words.w1 >> 24) & 0x7);
+    s32  ulx  = (s32)((cmd->words.w1 >> 12) & 0xFFF);
+    s32  uly  = (s32)(cmd->words.w1 & 0xFFF);
+    s16  uls  = (s16)((cmd + 1)->words.w1 >> 16);
+    s16  ult  = (s16)((cmd + 1)->words.w1 & 0xFFFF);
+    s16  dsdx = (s16)((cmd + 2)->words.w1 >> 16);
+    s16  dtdy = (s16)((cmd + 2)->words.w1 & 0xFFFF);
+    gfx_dp_texture_rectangle(ulx, uly, lrx, lry, tile, uls, ult, dsdx, dtdy, flip);
+}
 
 static void gfx_rdp_set_scissor(const Gfx *cmd) {
     float rx = (gl_window_width  > 0) ? (float)gl_window_width  / 320.0f : 2.0f;
