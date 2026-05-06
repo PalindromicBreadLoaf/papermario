@@ -111,7 +111,7 @@ static void GLAPIENTRY gl_debug_callback(GLenum source, GLenum type, GLuint id,
                                           const GLchar *message,
                                           const void *userParam) {
     (void)source; (void)id; (void)length; (void)userParam;
-    if (severity == 0x9147u /* GL_DEBUG_SEVERITY_NOTIFICATION */) return;
+    if (severity == 0x826Bu) return; // GL_DEBUG_SEVERITY_NOTIFICATION
     fprintf(stderr, "GL[type=0x%04X sev=0x%04X]: %s\n", type, severity, message);
 }
 
