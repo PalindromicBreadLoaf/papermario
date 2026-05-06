@@ -3,7 +3,7 @@ project(papermario_pc VERSION 0.1.0 LANGUAGES C)
 
 # -DBUILD_PC=ON selects the host PC build. The existing Ninja/N64 build is
 # driven by ./configure + ninja and is completely unaffected by this file.
-option(BUILD_PC "Build the PC port (parallel to the N64 Ninja build)" OFF)
+option(BUILD_PC "Build the PC port (parallel to the N64 Ninja build)" ON)
 
 if(NOT BUILD_PC)
     message(STATUS "BUILD_PC=OFF - nothing configured. Pass -DBUILD_PC=ON to enable the PC port.")
