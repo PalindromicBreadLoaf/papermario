@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <math.h>
+#include "glad/gl.h"
 #include "gbi_interpreter.h"
 #include "rdp_state.h"
 #include "gl_backend.h"
@@ -179,6 +180,39 @@ static void gfx_sp_vertex(int n, int dest, const Vtx *src) {
     }
 }
 
+// Apply current other_mode_l to the GL depth and blend state.
+// Must be called after gfx_flush() so the state takes effect on the next batch.
+static void gfx_apply_render_state(void) {
+    u32 oml = g_rdp.other_mode_l;
+
+    if (oml & Z_CMP)
+        glEnable(GL_DEPTH_TEST);
+    else
+        glDisable(GL_DEPTH_TEST);
+
+    glDepthMask((oml & Z_UPD) ? GL_TRUE : GL_FALSE);
+
+    // FORCE_BL: the blender is active regardless of coverage.
+    // CVG_X_ALPHA + ALPHA_CVG_SEL: coverage treated as alpha
+    bool use_alpha = (oml & FORCE_BL) ||
+                    ((oml & CVG_X_ALPHA) && (oml & ALPHA_CVG_SEL));
+    if (use_alpha) {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    } else {
+        glDisable(GL_BLEND);
+    }
+}
+
+// If other_mode_l changed since the last draw, flush pending tris (so they
+// keep the old blend state) and then switch to the new GL state.
+static void gfx_ensure_blend_state(void) {
+    if (!g_rdp.blend_dirty) return;
+    gfx_flush();
+    g_rdp.blend_dirty = false;
+    gfx_apply_render_state();
+}
+
 // If any texture slot is dirty, flush pending triangles (so they keep the old
 // bindings) and then re-upload via the texture cache.
 static void gfx_ensure_textures(void) {
@@ -239,6 +273,7 @@ static void gfx_sp_tri1(u8 v0, u8 v1, u8 v2) {
         }
     }
 
+    gfx_ensure_blend_state();
     gfx_ensure_textures();
     if (gfx_buf_vbo_num_tris == GFX_MAX_BUFFERED) gfx_flush();
 
@@ -301,8 +336,21 @@ static void gfx_sp_branch_z(const Gfx *cmd)          { (void)cmd; }
 static void gfx_sp_geometry_mode(const Gfx *cmd)     { (void)cmd; }
 static void gfx_sp_move_mem(const Gfx *cmd)          { (void)cmd; }
 static void gfx_sp_move_word(const Gfx *cmd)         { (void)cmd; }
-static void gfx_rdp_set_other_mode_h(const Gfx *cmd) { (void)cmd; }
-static void gfx_rdp_set_other_mode_l(const Gfx *cmd) { (void)cmd; }
+
+static void gfx_rdp_set_other_mode_h(const Gfx *cmd) {
+    u32 shift = 31u - C0(8, 8) - C0(0, 8);
+    u32 count = C0(0, 8) + 1u;
+    u32 mask  = ((1u << count) - 1u) << shift;
+    g_rdp.other_mode_h = (g_rdp.other_mode_h & ~mask) | (cmd->words.w1 & mask);
+}
+
+static void gfx_rdp_set_other_mode_l(const Gfx *cmd) {
+    u32 shift = 31u - C0(8, 8) - C0(0, 8);
+    u32 count = C0(0, 8) + 1u;
+    u32 mask  = ((1u << count) - 1u) << shift;
+    g_rdp.other_mode_l = (g_rdp.other_mode_l & ~mask) | (cmd->words.w1 & mask);
+    g_rdp.blend_dirty  = true;
+}
 
 static void gfx_rdp_set_texture_image(const Gfx *cmd) {
     g_rdp.tex_to_load.fmt       = (u8)C0(21, 3);

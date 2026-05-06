@@ -118,6 +118,10 @@ typedef struct {
     // Z-buffer bookkeeping
     void *z_buf_addr;
     void *color_buf_addr;
+
+    // Set whenever other_mode_l changes; triggers a flush + GL state update before
+    // the next triangle batch so render-mode boundaries are respected.
+    bool blend_dirty;
 } RdpState;
 
 extern RspState g_rsp;
