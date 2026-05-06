@@ -333,9 +333,45 @@ static void gfx_sp_texture(const Gfx *cmd) {
 static void gfx_sp_modify_vertex(const Gfx *cmd)     { (void)cmd; }
 static void gfx_sp_cull_dl(const Gfx *cmd)           { (void)cmd; }
 static void gfx_sp_branch_z(const Gfx *cmd)          { (void)cmd; }
-static void gfx_sp_geometry_mode(const Gfx *cmd)     { (void)cmd; }
-static void gfx_sp_move_mem(const Gfx *cmd)          { (void)cmd; }
-static void gfx_sp_move_word(const Gfx *cmd)         { (void)cmd; }
+
+static void gfx_sp_geometry_mode(const Gfx *cmd) {
+    // F3DEX2 encodes ~clear_mask in w0[23:0] and set_mask in w1.
+    g_rsp.geometry_mode = (g_rsp.geometry_mode & (u32)C0(0, 24)) | cmd->words.w1;
+}
+
+static void gfx_sp_move_mem(const Gfx *cmd) {
+    // F3DEX2 has index = w0[7:0], offset = w0[15:8] * 8, addr = w1.
+    u8         index  = (u8)C0(0, 8);
+    int        offset = (int)C0(8, 8) * 8;
+    const void *data  = (const void *)(uintptr_t)cmd->words.w1;
+
+    if (index == G_MV_LIGHT) {
+        // offset 0 and 24 are the lookat entries; lights start at offset 48.
+        int slot = offset / 24 - 2;
+        if (slot >= 0 && slot <= GFX_MAX_LIGHTS) {
+            memcpy(&g_rsp.lights[slot], data, sizeof(Light_t));
+            g_rsp.lights_dirty = true;
+        }
+    }
+}
+
+static void gfx_sp_move_word(const Gfx *cmd) {
+    // F3DEX2: index = w0[23:16], offset = w0[15:0], data = w1.
+    u8  index = (u8)C0(16, 8);
+    u32 data  = cmd->words.w1;
+
+    switch (index) {
+        case G_MW_NUMLIGHT:
+            // F3DEX2: data = NUML(n) = n * 24; +1 to include ambient slot.
+            g_rsp.num_lights = (int)(data / 24) + 1;
+            g_rsp.lights_dirty = true;
+            break;
+        case G_MW_FOG:
+            g_rsp.fog_mul    = (s16)(data >> 16);
+            g_rsp.fog_offset = (s16)(data & 0xFFFF);
+            break;
+    }
+}
 
 static void gfx_rdp_set_other_mode_h(const Gfx *cmd) {
     u32 shift = 31u - C0(8, 8) - C0(0, 8);
