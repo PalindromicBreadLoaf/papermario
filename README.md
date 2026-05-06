@@ -1,7 +1,18 @@
-# Paper Mario
+# Paper Mario PC
 
 [![Build Status][jenkins-badge]][jenkins]
 [![Discord Channel][discord-badge]][discord]
+
+This is a work-in-progress Windows/macOS/Linux port of the decompilation of Paper Mario.
+
+Currently, the built executable does nothing. Do not expect it to do anything.
+
+Assets must be provided from a US ROM of Paper Mario (see hashes below).
+
+## Building
+I'll complete this later once other, more important things, are done.
+
+## Prior README
 
 This is a work-in-progress decompilation of Paper Mario.
 
