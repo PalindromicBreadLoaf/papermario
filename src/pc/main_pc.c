@@ -2,6 +2,7 @@
 #include <string.h>
 #include <SDL2/SDL.h>
 #include "asset_loader.h"
+#include "audio_pc.h"
 #include "gbi_interpreter.h"
 #include "gl_backend.h"
 
@@ -20,6 +21,7 @@ int main(int argc, char *argv[]) {
     }
 
     asset_loader_init(rom_path);
+    audio_pc_init();
     gl_backend_init("Paper Mario", 640, 480);
     gbi_init();
     gfx_dump_dl = dump_dl;
@@ -38,6 +40,7 @@ int main(int argc, char *argv[]) {
     }
 
     gl_backend_shutdown();
+    audio_pc_shutdown();
     asset_loader_shutdown();
     return 0;
 }

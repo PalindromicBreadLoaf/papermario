@@ -23,6 +23,7 @@ endif()
 include_directories(
     ${CMAKE_SOURCE_DIR}/src/pc/include
     ${CMAKE_SOURCE_DIR}/src/pc/gfx
+    ${CMAKE_SOURCE_DIR}/src/pc/audio
     ${CMAKE_SOURCE_DIR}/include
 )
 
@@ -49,6 +50,7 @@ target_sources(papermario PRIVATE
     src/pc/os/os_cont.c
     src/pc/os/os_pi.c
     src/pc/os/os_sp.c
+    src/pc/os/os_ai.c
 
     src/pc/gfx/glad.c
     src/pc/gfx/tex_conv.c
@@ -61,6 +63,9 @@ target_sources(papermario PRIVATE
     src/pc/nusys/nu_sched.c
     src/pc/nusys/nu_gfx.c
     src/pc/nusys/nu_pi.c
+
+    src/pc/audio/audio_pc.c
+    src/pc/audio/vadpcm_dec.c
 )
 
 # Dependencies
