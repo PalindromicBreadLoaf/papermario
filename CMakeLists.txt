@@ -38,6 +38,7 @@ add_executable(papermario)
 
 target_sources(papermario PRIVATE
     src/pc/main_pc.c
+    src/pc/boot_stub.c
     src/pc/asset_loader.c
 
     src/pc/os/os_cache.c
@@ -70,6 +71,7 @@ target_sources(papermario PRIVATE
     src/pc/nusys/nu_sched.c
     src/pc/nusys/nu_gfx.c
     src/pc/nusys/nu_pi.c
+    src/pc/nusys/nu_boot.c
 
     src/pc/audio/audio_pc.c
     src/pc/audio/vadpcm_dec.c
