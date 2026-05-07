@@ -32,6 +32,11 @@ extern int gfx_use_tex;
 // Shut down SDL2 and destroy the GL context.
 void gl_backend_shutdown(void);
 
+// Transfer the GL context to the calling thread. Call once from the dedicated
+// render thread before any gl_backend_start_frame / gfx_flush / gl_backend_end_frame
+// calls. The main thread must NOT call any GL functions after this point.
+void gl_backend_make_context_current(void);
+
 // Current window dimensions in pixels, updated every frame.
 extern int gl_window_width;
 extern int gl_window_height;

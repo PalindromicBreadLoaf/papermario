@@ -217,6 +217,14 @@ void gl_backend_init(const char *title, int width, int height) {
     glEnable(GL_SCISSOR_TEST);
     glEnable(GL_POLYGON_OFFSET_FILL);
     glPolygonOffset(-2.0f, -2.0f);
+
+    SDL_GL_MakeCurrent(s_window, NULL);
+}
+
+void gl_backend_make_context_current(void) {
+    if (SDL_GL_MakeCurrent(s_window, s_gl_ctx) != 0) {
+        fprintf(stderr, "gl_backend: SDL_GL_MakeCurrent failed: %s\n", SDL_GetError());
+    }
 }
 
 void gl_backend_start_frame(void) {
