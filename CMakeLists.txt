@@ -51,6 +51,13 @@ target_sources(papermario PRIVATE
     src/pc/os/os_pi.c
     src/pc/os/os_sp.c
     src/pc/os/os_ai.c
+    src/pc/os/os_internal_reg.c
+    src/pc/os/os_tlb.c
+    src/pc/os/os_gu.c
+    src/pc/os/decode_yay0.c
+    src/pc/os/os_libc.c
+    src/pc/os/os_sched.c
+    src/pc/os/sk_api.c
 
     src/pc/gfx/glad.c
     src/pc/gfx/tex_conv.c
