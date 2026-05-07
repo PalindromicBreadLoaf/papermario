@@ -29,6 +29,8 @@ static void gfx_thread(void *arg) {
     NUScMsg   *mesgType;
 
     (void)arg;
+    gl_backend_make_context_current();
+
     osCreateMesgQueue(&nuGfxMesgQ, sGfxMesgBuf, NU_GFX_MESGS);
     nuScAddClient(&gfxClient, &nuGfxMesgQ, NU_SC_RETRACE_MSG | NU_SC_PRENMI_MSG);
 
@@ -54,24 +56,22 @@ void nuGfxTaskMgrInit(void) {
     nuGfxTaskSpool = 0;
 }
 
+static bool s_frame_started = false;
+
 void nuGfxTaskStart(Gfx *gfxList, u32 gfxListSize, u32 ucode, u32 flag) {
     (void)gfxListSize; (void)ucode;
     nuGfxTaskSpool++;
 
-    gl_backend_start_frame();
+    if (!s_frame_started) {
+        gl_backend_start_frame();
+        s_frame_started = true;
+    }
+
     gbi_run_dl(gfxList);
-    gl_backend_end_frame();
 
     if (flag & NU_SC_SWAPBUFFER) {
-        if (nuGfxSwapCfbFunc && nuGfxCfbNum > 0) {
-            static NUScTask sTmpTask;
-            sTmpTask.framebuffer = nuGfxCfb_ptr;
-            nuGfxSwapCfbFunc(&sTmpTask);
-        }
-        if (nuGfxCfbNum > 0) {
-            nuGfxCfbCounter = (nuGfxCfbCounter + 1) % nuGfxCfbNum;
-            nuGfxCfb_ptr    = nuGfxCfb[nuGfxCfbCounter];
-        }
+        gl_backend_end_frame();
+        s_frame_started = false;
     }
 
     nuGfxTaskSpool--;
