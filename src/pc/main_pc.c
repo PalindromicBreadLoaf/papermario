@@ -6,7 +6,8 @@
 #include "gbi_interpreter.h"
 #include "gl_backend.h"
 
-void nu_audio_init(void);
+extern void nuBoot(void);
+extern void nu_audio_init(void);
 
 #define DEFAULT_ROM_PATH "ver/us/baserom.z64"
 
@@ -25,9 +26,16 @@ int main(int argc, char *argv[]) {
     asset_loader_init(rom_path);
     audio_pc_init();
     nu_audio_init();
+
+    // Creates the SDL window and OpenGL 3.3 context, then releases the context
+    // from this thread so the NuSystem gfx thread can claim it.
     gl_backend_init("Paper Mario", 640, 480);
     gbi_init();
     gfx_dump_dl = dump_dl;
+
+    // Start the boot chain: idle thread → scheduler → game thread.
+    // All rendering happens via nuGfxTaskStart in the NuSystem gfx thread.
+    nuBoot();
 
     bool running = true;
     while (running) {
@@ -36,14 +44,11 @@ int main(int argc, char *argv[]) {
             if (ev.type == SDL_QUIT) running = false;
             if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_ESCAPE) running = false;
         }
-
-        gl_backend_start_frame();
-        //TODO: Game logic
-        gl_backend_end_frame();
+        SDL_Delay(4);
     }
 
-    gl_backend_shutdown();
     audio_pc_shutdown();
     asset_loader_shutdown();
+    SDL_Quit();
     return 0;
 }
