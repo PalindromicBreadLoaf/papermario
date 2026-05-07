@@ -4,22 +4,17 @@
 #include <PR/os_vi.h>
 #include "pc_window.h"
 
-#define PC_WINDOW_TITLE  "Paper Mario"
-#define PC_WIN_W         640
-#define PC_WIN_H         480
-
+// These are kept for API compatibility but are always NULL on PC.
 SDL_Window   *gPcWindow   = NULL;
 SDL_GLContext gPcGlContext = NULL;
 
 // N64 video clock (NTSC DAC rate). Referenced by the audio system.
 s32 osViClock = 48681812;
 
-// Dummy VI mode table. All entries are zero. On PC the mode only controls
-// which SDL window size we open: a fixed 640x480 window.
-// TODO: Support resizing windows and higher resolutions
+// Dummy VI mode table. All entries are zero.
 OSViMode osViModeTable[56];
 
-// osViSetMode receives a pointer to one of these; on PC this is ignored.
+// On PC the VI mode is irrelevant
 OSViMode osViModeNtscLpn1, osViModeNtscLpf1, osViModeNtscLan1, osViModeNtscLaf1;
 OSViMode osViModeNtscLpn2, osViModeNtscLpf2, osViModeNtscLan2, osViModeNtscLaf2;
 OSViMode osViModeNtscHpn1, osViModeNtscHpf1, osViModeNtscHan1, osViModeNtscHaf1;
@@ -41,30 +36,7 @@ OSViMode osViModeFpalHpn2, osViModeFpalHpf2;
 static void *sCurrentFb = NULL;
 static void *sNextFb    = NULL;
 
-static void create_window(void) {
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
-
-    gPcWindow = SDL_CreateWindow(
-        PC_WINDOW_TITLE,
-        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        PC_WIN_W, PC_WIN_H,
-        SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE
-    );
-
-    gPcGlContext = SDL_GL_CreateContext(gPcWindow);
-    SDL_GL_SetSwapInterval(1);
-}
-
-void osViSetMode(OSViMode *mode) {
-    (void)mode;
-    if (gPcWindow == NULL) {
-        create_window();
-    }
-}
+void osViSetMode(OSViMode *mode) { (void)mode; }
 
 void osViSetSpecialFeatures(u32 func) { (void)func; }
 void osViSetXScale(f32 scale)         { (void)scale; }
@@ -82,9 +54,6 @@ void osViBlack(u8 active) {
 void osViSwapBuffer(void *fb) {
     sCurrentFb = sNextFb;
     sNextFb    = fb;
-    if (gPcWindow) {
-        SDL_GL_SwapWindow(gPcWindow);
-    }
 }
 
 void osViSetEvent(OSMesgQueue *mq, OSMesg msg, u32 retraceCount) {
