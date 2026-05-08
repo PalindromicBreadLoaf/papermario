@@ -5,10 +5,9 @@
 #include "gbi_interpreter.h"
 #include "gl_backend.h"
 
-u16           **nuGfxCfb           = NULL;
+// nuGfxCfb, nuGfxZBuffer, and nuYieldBuf are defined in the game source (main_loop.c / main.c).
 u16            *nuGfxCfb_ptr       = NULL;
 u32             nuGfxCfbNum        = NU_GFX_FRAMEBUFFER_NUM;
-u16            *nuGfxZBuffer       = NULL;
 u32             nuGfxDisplay       = NU_GFX_DISPLAY_OFF;
 u32             nuGfxCfbCounter    = 0;
 volatile u32    nuGfxTaskSpool     = 0;
@@ -18,7 +17,6 @@ NUGfxSwapCfbFunc nuGfxSwapCfbFunc  = NULL;
 NUGfxFunc       nuGfxFunc          = NULL;
 NUGfxPreNMIFunc nuGfxPreNMIFunc    = NULL;
 OSThread        nuGfxThread;
-u8              nuYieldBuf[NU_GFX_YIELD_BUF_SIZE];
 
 // nuGfxMesgQ is used by the gfx thread; nuGfxTaskEndFunc is internal.
 OSMesgQueue     nuGfxMesgQ;
