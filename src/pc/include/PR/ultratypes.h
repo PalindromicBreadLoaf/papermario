@@ -1,7 +1,6 @@
 #ifndef _ULTRATYPES_H_
 #define _ULTRATYPES_H_
 
-// PC-compatible replacement for include/PR/ultratypes.h.
 // The N64 version uses `unsigned long` for u32, which is 8 bytes on x86-64.
 
 #include <stddef.h>
