@@ -75,6 +75,9 @@ static u16           sGlobalVolume = 0x7FFF;
 
 static PcAudioDriver sDriver;
 
+AuSynDriver *gActiveSynDriverPtr = NULL;
+AuSynDriver *gSynDriverPtr = NULL;
+
 __attribute__((weak)) void au_update_clients_for_video_frame(void) {}
 __attribute__((weak)) void au_update_clients_for_audio_frame(void) {}
 
@@ -359,7 +362,8 @@ void au_disable_channel_delay(void)        {}
 void au_init_delay_channel(s16 arg0)      { (void)arg0; }
 
 void au_driver_init(AuSynDriver *driver, ALConfig *config) {
-    (void)driver;
+    gActiveSynDriverPtr = driver;
+    gSynDriverPtr = driver;
     (void)config;
 }
 
@@ -387,6 +391,13 @@ void *alHeapDBAlloc(u8 *file, s32 line, ALHeap *hp, s32 num, s32 size) {
     return ptr;
 }
 
+#ifdef alHeapAlloc
+#undef alHeapAlloc
+#endif
+void *alHeapAlloc(ALHeap *hp, s32 num, s32 size) {
+    return alHeapDBAlloc(NULL, 0, hp, num, size);
+}
+
 s32 alHeapCheck(ALHeap *hp) {
     (void)hp;
     return 0;
@@ -396,14 +407,14 @@ void alCopy(void *src, void *dest, s32 len) {
     memcpy(dest, src, (size_t)len);
 }
 
-void alLink(ALLink *element, ALLink *after) {
+__attribute__((weak)) void alLink(ALLink *element, ALLink *after) {
     element->next = after->next;
     element->prev = after;
     if (after->next) after->next->prev = element;
     after->next = element;
 }
 
-void alUnlink(ALLink *element) {
+__attribute__((weak)) void alUnlink(ALLink *element) {
     if (element->next) element->next->prev = element->prev;
     if (element->prev) element->prev->next = element->next;
 }
