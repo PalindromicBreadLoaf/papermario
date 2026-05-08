@@ -12,8 +12,7 @@ endif()
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
-# Keep GCC extensions enabled (gnu11). The game source uses address-constant
-# integer casts in static initializers which require GCC extensions.
+# Keep GCC extensions enabled (gnu11).
 set(CMAKE_C_EXTENSIONS ON)
 
 if(MSVC)
@@ -61,37 +60,38 @@ add_compile_definitions(
     BUILD_PC
     VERSION_US=1
     VERSION=us
-    _LANGUAGE_C      # gates N64 libultra type definitions in include/PR/*.h
+    _LANGUAGE_C
     F3DEX_GBI_2
     MODERN_COMPILER
     AVOID_UB
 )
 
-# --- Collect all compilable game source files ---
+# Collect all compilable game source files
 file(GLOB_RECURSE GAME_SRC CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/*.c")
 
-# Exclude N64-only directories and included-only files
+# Exclude N64-only directories
 list(FILTER GAME_SRC EXCLUDE REGEX ".*/src/os/.*")
 list(FILTER GAME_SRC EXCLUDE REGEX ".*/src/pc/.*")
 list(FILTER GAME_SRC EXCLUDE REGEX ".*/src/boot/.*")
 list(FILTER GAME_SRC EXCLUDE REGEX ".*/src/gcc/.*")
 list(FILTER GAME_SRC EXCLUDE REGEX ".*/src/world/dead/.*")
 list(FILTER GAME_SRC EXCLUDE REGEX ".*\\.inc\\.c$")
-# Exclude PAL-only locale files (German, French, Spanish) — US build only
+
+# Exclude PAL-only locale files (German, French, Spanish)
+# TODO: Expand beyond US-only build
 list(FILTER GAME_SRC EXCLUDE REGEX ".*_de\\.c$")
 list(FILTER GAME_SRC EXCLUDE REGEX ".*_fr\\.c$")
 list(FILTER GAME_SRC EXCLUDE REGEX ".*_es\\.c$")
 list(FILTER GAME_SRC EXCLUDE REGEX ".*_en_de\\.c$")
-# Exclude PAL-only feature files with no US equivalent
 list(FILTER GAME_SRC EXCLUDE REGEX ".*/filemenu/filemenu_selectlanguage\\.c$")
-# Exclude N64 IS-Viewer debug output — conflicts with system printf on PC
-list(FILTER GAME_SRC EXCLUDE REGEX ".*/is_debug\\.c$")
-# Exclude PAL-only title menu assets (language selection buttons not present in US ROM)
 list(FILTER GAME_SRC EXCLUDE REGEX ".*/titlemenu\\.c$")
-# Exclude JP-only intro narrator code from the US PC target.
 list(FILTER GAME_SRC EXCLUDE REGEX ".*/src/world/area_hos/hos_10/narrator\\.c$")
 list(FILTER GAME_SRC EXCLUDE REGEX ".*/src/.*_obfuscated\\.c$")
 list(FILTER GAME_SRC EXCLUDE REGEX ".*/src/load_obfuscation_shims\\.c$")
+
+# Exclude N64 IS-Viewer debug output
+list(FILTER GAME_SRC EXCLUDE REGEX ".*/is_debug\\.c$")
+
 # PC audio supplies host implementations of the libaudio synthesis entry points.
 list(FILTER GAME_SRC EXCLUDE REGEX ".*/src/audio/core/syn_driver\\.c$")
 
@@ -125,8 +125,8 @@ if(INCLUDED_GAME_SRC)
     list(REMOVE_DUPLICATES INCLUDED_GAME_SRC)
     list(REMOVE_ITEM GAME_SRC ${INCLUDED_GAME_SRC})
 endif()
-# These are included by parent translation units and are not valid standalone
-# sources in the PC build.
+
+# These are included by parent translation units and are not valid standalone sources
 list(FILTER GAME_SRC EXCLUDE REGEX ".*/src/effects/effect_table\\.c$")
 list(FILTER GAME_SRC EXCLUDE REGEX ".*/src/world/area_dro/dro_01/npc_composer\\.c$")
 list(FILTER GAME_SRC EXCLUDE REGEX ".*/src/world/area_dro/dro_01/npc_hint_dryite\\.c$")
@@ -293,7 +293,6 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND NOT APPLE)
     endforeach()
 endif()
 
-# Dependencies
 find_package(OpenGL REQUIRED)
 find_package(SDL2 REQUIRED)
 find_package(SDL2_mixer REQUIRED)
@@ -336,6 +335,3 @@ if(NOT MSVC)
         -Wl,--wrap=dma_write
     )
 endif()
-
-# Subdirectories
-# add_subdirectory(src/pc)
