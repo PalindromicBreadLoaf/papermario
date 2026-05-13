@@ -5,6 +5,8 @@
 #include "pc_cont.h"
 
 static SDL_GameController *sControllers[MAXCONTROLLERS];
+static SDL_SpinLock sPadLock;
+static OSContPad sCurrentPads[MAXCONTROLLERS];
 
 static const struct { SDL_GameControllerButton btn; u16 mask; } kButtonMap[] = {
     { SDL_CONTROLLER_BUTTON_A,             CONT_A     },
@@ -80,11 +82,31 @@ static void overlay_keyboard(OSContPad *pad) {
     }
 }
 
-void pc_cont_poll(OSContPad *pads, int count) {
-    SDL_PumpEvents();
-    for (int i = 0; i < count; i++)
+void pc_cont_update(void) {
+    OSContPad pads[MAXCONTROLLERS];
+
+    for (int i = 0; i < MAXCONTROLLERS; i++) {
         fill_from_gamepad(i, &pads[i]);
+    }
     overlay_keyboard(&pads[0]);
+
+    SDL_AtomicLock(&sPadLock);
+    for (int i = 0; i < MAXCONTROLLERS; i++) {
+        sCurrentPads[i] = pads[i];
+    }
+    SDL_AtomicUnlock(&sPadLock);
+}
+
+void pc_cont_poll(OSContPad *pads, int count) {
+    if (count > MAXCONTROLLERS) {
+        count = MAXCONTROLLERS;
+    }
+
+    SDL_AtomicLock(&sPadLock);
+    for (int i = 0; i < count; i++) {
+        pads[i] = sCurrentPads[i];
+    }
+    SDL_AtomicUnlock(&sPadLock);
 }
 
 static OSContStatus sLastStatus[MAXCONTROLLERS];

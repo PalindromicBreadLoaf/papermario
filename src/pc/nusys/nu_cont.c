@@ -10,9 +10,8 @@ OSContStatus nuContStatus[MAXCONTROLLERS];
 u32          nuContNum         = 0;
 u32          nuContDataLockKey = 0;
 void        *nuContReadFunc    = NULL;
-void        *nuContPfs[MAXCONTROLLERS];
 
-// Detect connected controllers via osContInit
+// Detect connected controllers
 u8 nuSiMgrInit(void) {
     OSMesgQueue mq;
     OSMesg      buf;
