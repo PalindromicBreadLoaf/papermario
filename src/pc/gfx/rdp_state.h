@@ -71,6 +71,9 @@ typedef struct {
     s32 saved_ulx, saved_uly, saved_lrx, saved_lry;
     u8  saved_tile;
     u16 saved_uls, saved_ult;
+
+    // RSP segmented-address bases, set by gSPSegment/G_MW_SEGMENT.
+    void *segments[16];
 } RspState;
 
 // RDP state
@@ -87,11 +90,15 @@ typedef struct {
     struct {
         const u8 *addr;
         u32       size_bytes;
+        u16       width;
+        u16       height;
+        unsigned int tex_id;
     } loaded[2];             // currently loaded data for tile slots 0 and 1
 
     TileDesc tile[8];        // all 8 tile descriptors
     const u8 *tlut;          // RGBA5551 palette (big-endian), set by gDPLoadTLUT
     bool textures_dirty[2];  // set when load or tile-desc changes
+    int active_texture_slot; // texture slot selected by the current render tile
 
     // Color registers
     u8 env_r,  env_g,  env_b,  env_a;

@@ -6,7 +6,7 @@
 #include "gl_backend.h"
 #include "rdp_state.h"
 
-// GLSL sources (embedded to avoid runtime file-path dependencies).
+// GLSL sources
 static const char *s_vert_src =
     "#version 330 core\n"
     "layout(location = 0) in vec4 a_pos;\n"
@@ -215,8 +215,6 @@ void gl_backend_init(const char *title, int width, int height) {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glEnable(GL_SCISSOR_TEST);
-    glEnable(GL_POLYGON_OFFSET_FILL);
-    glPolygonOffset(-2.0f, -2.0f);
 
     SDL_GL_MakeCurrent(s_window, NULL);
 }

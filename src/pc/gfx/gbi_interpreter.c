@@ -8,10 +8,269 @@
 #include "gl_backend.h"
 #include "texture_cache.h"
 
+void* pc_tlb_translate(void* vaddr);
+void* pc_resolve_physical_addr(uintptr_t addr);
+extern u8 gMapShapeData[];
+
 // Bit-field extractors for GBI command words.  Both gbi_run_dl and all static
 // handler functions receive a 'cmd' pointer; the macros expand using that name.
 #define C0(pos, width) ((cmd->words.w0 >> (pos)) & ((1u << (width)) - 1u))
 #define C1(pos, width) ((cmd->words.w1 >> (pos)) & ((1u << (width)) - 1u))
+#define PC_SHAPE_KSEG_BASE  0x80210000u
+#define PC_SHAPE_PHYS_BASE  0x00210000u
+#define PC_SHAPE_SIZE_LIMIT 0x40000u
+
+static int s_texel0_slot = -1;
+static unsigned int s_texel0_id;
+static unsigned int s_texel1_id;
+
+static inline u32 bswap32(u32 value) {
+    return ((value & 0x000000FFu) << 24)
+         | ((value & 0x0000FF00u) << 8)
+         | ((value & 0x00FF0000u) >> 8)
+         | ((value & 0xFF000000u) >> 24);
+}
+
+static inline u16 read_be16(const void *ptr) {
+    const u8 *p = ptr;
+
+    return (u16)(((u16)p[0] << 8) | p[1]);
+}
+
+static inline s16 read_be_s16(const void *ptr) {
+    return (s16)read_be16(ptr);
+}
+
+static bool ptr_in_map_shape(const void *ptr, size_t size) {
+    uintptr_t start = (uintptr_t)ptr;
+    uintptr_t base = (uintptr_t)gMapShapeData;
+
+    return start >= base && size <= PC_SHAPE_SIZE_LIMIT && start - base <= PC_SHAPE_SIZE_LIMIT - size;
+}
+
+static bool gbi_opcode_known(u8 opcode) {
+    switch (opcode) {
+        case G_NOOP:
+        case G_SPNOOP:
+        case G_ENDDL:
+        case G_DL:
+        case G_RDPHALF_1:
+        case G_RDPHALF_2:
+        case G_VTX:
+        case G_MODIFYVTX:
+        case G_CULLDL:
+        case G_BRANCH_Z:
+        case G_LINE3D:
+        case G_TRI1:
+        case G_TRI2:
+        case G_QUAD:
+        case G_MTX:
+        case G_POPMTX:
+        case G_GEOMETRYMODE:
+        case G_TEXTURE:
+        case G_MOVEMEM:
+        case G_MOVEWORD:
+        case G_LOAD_UCODE:
+        case G_SETOTHERMODE_H:
+        case G_SETOTHERMODE_L:
+        case G_SETTIMG:
+        case G_SETTILE:
+        case G_LOADTILE:
+        case G_LOADBLOCK:
+        case G_SETTILESIZE:
+        case G_LOADTLUT:
+        case G_SETPRIMDEPTH:
+        case G_SETCOMBINE:
+        case G_SETENVCOLOR:
+        case G_SETPRIMCOLOR:
+        case G_SETBLENDCOLOR:
+        case G_SETFOGCOLOR:
+        case G_SETFILLCOLOR:
+        case G_FILLRECT:
+        case G_TEXRECT:
+        case G_TEXRECTFLIP:
+        case G_SETSCISSOR:
+        case G_SETCIMG:
+        case G_SETZIMG:
+        case G_RDPFULLSYNC:
+        case G_RDPTILESYNC:
+        case G_RDPPIPESYNC:
+        case G_RDPLOADSYNC:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Decode one display-list command and report its byte stride.
+// PC-native commands are 16 bytes (two uintptr_t). N64 big-endian commands
+// are 8 bytes: the N64's w0 sits in the low 32 bits of the PC w0, and the
+// N64's w1 sits in the HIGH 32 bits of the PC w0 (not in PC w1).
+// stride_bytes is set to 8 for N64 commands, sizeof(Gfx) for PC commands.
+static Gfx gbi_read_cmd(const Gfx *src, int *stride_bytes) {
+    Gfx cmd = *src;
+    u8 opcode = (u8)(cmd.words.w0 >> 24);
+    u8 swapped_opcode = (u8)cmd.words.w0;
+
+    if (!gbi_opcode_known(opcode) && gbi_opcode_known(swapped_opcode)) {
+        u32 n64_w1 = cmd.words.w1;
+        cmd.words.w0 = bswap32(cmd.words.w0);
+        cmd.words.w1 = bswap32(n64_w1);
+        *stride_bytes = 8;
+    } else {
+        *stride_bytes = (int)sizeof(Gfx);
+    }
+    return cmd;
+}
+
+static void *gfx_default_segment_base(u8 segment) {
+    if (segment == 1) {
+        return ((void **)gMapShapeData)[1];
+    }
+    return NULL;
+}
+
+// Cache readable process ranges so display-list pointer checks do not parse
+// /proc/self/maps for every command.
+typedef struct {
+    uintptr_t start;
+    uintptr_t end;
+} PcReadableRange;
+
+#define PC_READABLE_MAX_RANGES 256
+static PcReadableRange s_readable_ranges[PC_READABLE_MAX_RANGES];
+static int             s_readable_range_count = 0;
+
+static void gfx_readable_refresh_locked(void) {
+    char line[256];
+    FILE *maps;
+
+    s_readable_range_count = 0;
+    maps = fopen("/proc/self/maps", "r");
+    if (maps == NULL) {
+        return;
+    }
+
+    while (fgets(line, sizeof(line), maps) != NULL) {
+        unsigned long long map_start;
+        unsigned long long map_end;
+        char perms[5];
+
+        if (sscanf(line, "%llx-%llx %4s", &map_start, &map_end, perms) != 3) {
+            continue;
+        }
+        if (perms[0] != 'r') {
+            continue;
+        }
+
+        if (s_readable_range_count > 0
+                && s_readable_ranges[s_readable_range_count - 1].end == (uintptr_t)map_start) {
+            s_readable_ranges[s_readable_range_count - 1].end = (uintptr_t)map_end;
+            continue;
+        }
+
+        if (s_readable_range_count >= PC_READABLE_MAX_RANGES) {
+            break;
+        }
+        s_readable_ranges[s_readable_range_count].start = (uintptr_t)map_start;
+        s_readable_ranges[s_readable_range_count].end   = (uintptr_t)map_end;
+        s_readable_range_count++;
+    }
+
+    fclose(maps);
+}
+
+static bool gfx_readable_range_lookup(uintptr_t start, uintptr_t end) {
+    int lo = 0;
+    int hi = s_readable_range_count - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) >> 1;
+        if (s_readable_ranges[mid].end <= start) {
+            lo = mid + 1;
+        } else if (s_readable_ranges[mid].start > start) {
+            hi = mid - 1;
+        } else {
+            return end <= s_readable_ranges[mid].end;
+        }
+    }
+    return false;
+}
+
+static bool gfx_ptr_range_readable(const void *ptr, size_t size) {
+    uintptr_t start = (uintptr_t)ptr;
+    uintptr_t end = start + size;
+
+    if (ptr == NULL || size == 0 || end < start) {
+        return false;
+    }
+
+    if (s_readable_range_count == 0) {
+        gfx_readable_refresh_locked();
+    }
+    if (gfx_readable_range_lookup(start, end)) {
+        return true;
+    }
+    // Cache miss: the mapping table is older than this pointer. Refresh and
+    // retry once. If it's still unknown, the pointer is genuinely bad.
+    gfx_readable_refresh_locked();
+    return gfx_readable_range_lookup(start, end);
+}
+
+static void *gfx_resolve_addr(uintptr_t addr) {
+    uintptr_t resolved = addr;
+    u8 segment = (u8)(addr >> 24);
+    void *default_base;
+
+    // PC host pointers into gMapShapeData (e.g. shape DLs) pass straight through;
+    // they must not be decoded as N64 segment-relative addresses even if their
+    // high byte accidentally matches a known segment number.
+    uintptr_t shape_start = (uintptr_t)gMapShapeData;
+    if (addr >= shape_start && addr < shape_start + PC_SHAPE_SIZE_LIMIT) {
+        return (void *)addr;
+    }
+
+    // PC-generated display lists may carry either full host pointers or the
+    // low 32 bits returned by osVirtualToPhysical(). Resolve those before
+    // interpreting the value as an N64 segmented address.
+    void *host_ptr = pc_resolve_physical_addr(addr);
+    if (gfx_ptr_range_readable(host_ptr, 1)) {
+        return host_ptr;
+    }
+
+    default_base = gfx_default_segment_base(segment);
+
+    if (default_base != NULL) {
+        return (u8 *)default_base + (addr & 0x00FFFFFFu);
+    }
+
+    if (segment < 16 && g_rsp.segments[segment] != NULL) {
+        return (u8 *)g_rsp.segments[segment] + (addr & 0x00FFFFFFu);
+    }
+
+    if (addr >= PC_SHAPE_KSEG_BASE && addr < PC_SHAPE_KSEG_BASE + PC_SHAPE_SIZE_LIMIT) {
+        return gMapShapeData + (addr - PC_SHAPE_KSEG_BASE);
+    }
+
+    if (addr >= PC_SHAPE_PHYS_BASE && addr < PC_SHAPE_PHYS_BASE + PC_SHAPE_SIZE_LIMIT) {
+        return gMapShapeData + (addr - PC_SHAPE_PHYS_BASE);
+    }
+
+#if UINTPTR_MAX > 0xffffffffu
+    if (addr >= UINT64_C(0xffffffff80000000)) {
+        resolved = (uintptr_t)((u32)addr + 0x80000000u);
+    } else
+#endif
+    if (addr >= 0x80000000u && addr < 0xC0000000u) {
+        resolved = (uintptr_t)((u32)addr + 0x80000000u);
+    }
+
+    void *tlb_ptr = pc_tlb_translate((void *)resolved);
+
+    if (tlb_ptr != (void *)resolved) {
+        return tlb_ptr;
+    }
+    return pc_resolve_physical_addr(resolved);
+}
 
 // Row-major 4x4 multiply.  res may alias a or b.
 static void gfx_matrix_mul(float res[4][4], const float a[4][4], const float b[4][4]) {
@@ -77,6 +336,14 @@ static void gfx_normalize_vector(float v[3]) {
     if (s > 0.0f) { v[0] /= s; v[1] /= s; v[2] /= s; }
 }
 
+static void gfx_clamp_num_lights(void) {
+    if (g_rsp.num_lights < 1) {
+        g_rsp.num_lights = 1;
+    } else if (g_rsp.num_lights > GFX_MAX_LIGHTS + 1) {
+        g_rsp.num_lights = GFX_MAX_LIGHTS + 1;
+    }
+}
+
 static void gfx_transposed_matrix_mul(float res[3], const float a[3], const float b[4][4]) {
     res[0] = a[0]*b[0][0] + a[1]*b[0][1] + a[2]*b[0][2];
     res[1] = a[0]*b[1][0] + a[1]*b[1][1] + a[2]*b[1][2];
@@ -84,6 +351,8 @@ static void gfx_transposed_matrix_mul(float res[3], const float a[3], const floa
 }
 
 static void gfx_update_light_coeffs(void) {
+    gfx_clamp_num_lights();
+
     for (int i = 0; i < g_rsp.num_lights - 1; i++) {
         float dir[3] = {
             g_rsp.lights[i].dir[0] / 127.0f,
@@ -106,6 +375,12 @@ static void gfx_update_light_coeffs(void) {
 }
 
 static void gfx_sp_vertex(int n, int dest, const Vtx *src) {
+    gfx_clamp_num_lights();
+
+    if (n <= 0 || dest < 0 || dest + n > GFX_MAX_VERTICES || !gfx_ptr_range_readable(src, (size_t)n * sizeof(*src))) {
+        return;
+    }
+
     if (g_rsp.lights_dirty && (g_rsp.geometry_mode & G_LIGHTING)) {
         gfx_update_light_coeffs();
     }
@@ -114,21 +389,29 @@ static void gfx_sp_vertex(int n, int dest, const Vtx *src) {
         const Vtx_t  *v  = &src[i].v;
         const Vtx_tn *vn = &src[i].n;
         LoadedVertex *d  = &g_rsp.loaded_vertices[dest + i];
+        bool be_vertex = ptr_in_map_shape(v, sizeof(*v));
+        s16 ob0 = be_vertex ? read_be_s16(&v->ob[0]) : v->ob[0];
+        s16 ob1 = be_vertex ? read_be_s16(&v->ob[1]) : v->ob[1];
+        s16 ob2 = be_vertex ? read_be_s16(&v->ob[2]) : v->ob[2];
+        s16 tc0 = be_vertex ? read_be_s16(&v->tc[0]) : v->tc[0];
+        s16 tc1 = be_vertex ? read_be_s16(&v->tc[1]) : v->tc[1];
 
-        float x = v->ob[0] * g_rsp.MP_matrix[0][0] + v->ob[1] * g_rsp.MP_matrix[1][0] +
-                  v->ob[2] * g_rsp.MP_matrix[2][0] + g_rsp.MP_matrix[3][0];
-        float y = v->ob[0] * g_rsp.MP_matrix[0][1] + v->ob[1] * g_rsp.MP_matrix[1][1] +
-                  v->ob[2] * g_rsp.MP_matrix[2][1] + g_rsp.MP_matrix[3][1];
-        float z = v->ob[0] * g_rsp.MP_matrix[0][2] + v->ob[1] * g_rsp.MP_matrix[1][2] +
-                  v->ob[2] * g_rsp.MP_matrix[2][2] + g_rsp.MP_matrix[3][2];
-        float w = v->ob[0] * g_rsp.MP_matrix[0][3] + v->ob[1] * g_rsp.MP_matrix[1][3] +
-                  v->ob[2] * g_rsp.MP_matrix[2][3] + g_rsp.MP_matrix[3][3];
+        float x = ob0 * g_rsp.MP_matrix[0][0] + ob1 * g_rsp.MP_matrix[1][0] +
+                  ob2 * g_rsp.MP_matrix[2][0] + g_rsp.MP_matrix[3][0];
+        float y = ob0 * g_rsp.MP_matrix[0][1] + ob1 * g_rsp.MP_matrix[1][1] +
+                  ob2 * g_rsp.MP_matrix[2][1] + g_rsp.MP_matrix[3][1];
+        float z = ob0 * g_rsp.MP_matrix[0][2] + ob1 * g_rsp.MP_matrix[1][2] +
+                  ob2 * g_rsp.MP_matrix[2][2] + g_rsp.MP_matrix[3][2];
+        float w = ob0 * g_rsp.MP_matrix[0][3] + ob1 * g_rsp.MP_matrix[1][3] +
+                  ob2 * g_rsp.MP_matrix[2][3] + g_rsp.MP_matrix[3][3];
         d->x = x; d->y = y; d->z = z; d->w = w;
 
-        d->u = (float)((v->tc[0] * (s32)g_rsp.tex_scale.s) >> 16);
-        d->v = (float)((v->tc[1] * (s32)g_rsp.tex_scale.t) >> 16);
+        d->u = (float)((tc0 * (s32)g_rsp.tex_scale.s) >> 16);
+        d->v = (float)((tc1 * (s32)g_rsp.tex_scale.t) >> 16);
 
         if (g_rsp.geometry_mode & G_LIGHTING) {
+            gfx_clamp_num_lights();
+
             int cr = g_rsp.lights[g_rsp.num_lights - 1].col[0];
             int cg = g_rsp.lights[g_rsp.num_lights - 1].col[1];
             int cb = g_rsp.lights[g_rsp.num_lights - 1].col[2];
@@ -236,14 +519,39 @@ static void gfx_ensure_textures(void) {
                                                 g_rdp.loaded[i].size_bytes,
                                                 tlut, width, height,
                                                 td->cms, td->cmt);
-        if (tex_id) gfx_bind_texture(i, tex_id);
+        if (tex_id) {
+            g_rdp.loaded[i].width = width;
+            g_rdp.loaded[i].height = height;
+            g_rdp.loaded[i].tex_id = tex_id;
+        }
+    }
+}
+
+static void gfx_bind_active_textures(int tex_slot) {
+    unsigned int tex0_id = g_rdp.loaded[tex_slot].tex_id;
+    unsigned int tex1_id = 0;
+
+    if (tex_slot + 1 < 2) {
+        tex1_id = g_rdp.loaded[tex_slot + 1].tex_id;
     }
 
-    gfx_use_tex = 0;
-    for (int i = 0; i < 2; i++) {
-        if (g_rdp.loaded[i].addr && g_rdp.loaded[i].size_bytes)
-            gfx_use_tex = i + 1;
+    if (s_texel0_slot == tex_slot && s_texel0_id == tex0_id && s_texel1_id == tex1_id) {
+        return;
     }
+
+    gfx_flush();
+    s_texel0_slot = tex_slot;
+    s_texel0_id = tex0_id;
+    s_texel1_id = tex1_id;
+
+    if (tex0_id != 0) {
+        gfx_bind_texture(0, tex0_id);
+    }
+    if (tex1_id != 0) {
+        gfx_bind_texture(1, tex1_id);
+    }
+
+    gfx_use_tex = tex0_id == 0 ? 0 : (tex1_id == 0 ? 1 : 2);
 }
 
 static void gfx_ensure_viewport(void) {
@@ -288,15 +596,26 @@ static void gfx_sp_tri1(u8 v0, u8 v1, u8 v2) {
     gfx_ensure_viewport();
     gfx_ensure_blend_state();
     gfx_ensure_textures();
+
+    int tex_slot = g_rdp.active_texture_slot;
+    if (tex_slot < 0 || tex_slot > 1 || !g_rdp.loaded[tex_slot].addr) {
+        tex_slot = (gfx_use_tex > 0) ? gfx_use_tex - 1 : 0;
+    }
+    gfx_bind_active_textures(tex_slot);
     if (gfx_buf_vbo_num_tris == GFX_MAX_BUFFERED) gfx_flush();
+
+    float tex_width = (float)g_rdp.loaded[tex_slot].width;
+    float tex_height = (float)g_rdp.loaded[tex_slot].height;
+    float inv_tex_width = tex_width > 0.0f ? 1.0f / (tex_width * 32.0f) : 1.0f;
+    float inv_tex_height = tex_height > 0.0f ? 1.0f / (tex_height * 32.0f) : 1.0f;
 
     for (int i = 0; i < 3; i++) {
         gfx_buf_vbo[gfx_buf_vbo_len++] = lv[i]->x;
         gfx_buf_vbo[gfx_buf_vbo_len++] = lv[i]->y;
         gfx_buf_vbo[gfx_buf_vbo_len++] = lv[i]->z;
         gfx_buf_vbo[gfx_buf_vbo_len++] = lv[i]->w;
-        gfx_buf_vbo[gfx_buf_vbo_len++] = lv[i]->u;
-        gfx_buf_vbo[gfx_buf_vbo_len++] = lv[i]->v;
+        gfx_buf_vbo[gfx_buf_vbo_len++] = lv[i]->u * inv_tex_width;
+        gfx_buf_vbo[gfx_buf_vbo_len++] = lv[i]->v * inv_tex_height;
         gfx_buf_vbo[gfx_buf_vbo_len++] = lv[i]->r / 255.0f;
         gfx_buf_vbo[gfx_buf_vbo_len++] = lv[i]->g / 255.0f;
         gfx_buf_vbo[gfx_buf_vbo_len++] = lv[i]->b / 255.0f;
@@ -356,7 +675,7 @@ static void gfx_sp_move_mem(const Gfx *cmd) {
     // F3DEX2 has index = w0[7:0], offset = w0[15:8] * 8, addr = w1.
     u8         index  = (u8)C0(0, 8);
     int        offset = (int)C0(8, 8) * 8;
-    const void *data  = (const void *)(uintptr_t)cmd->words.w1;
+    const void *data  = gfx_resolve_addr((uintptr_t)cmd->words.w1);
 
     if (index == G_MV_VIEWPORT) {
         const Vp_t *vp = (const Vp_t *)data;
@@ -390,12 +709,28 @@ static void gfx_sp_move_word(const Gfx *cmd) {
         case G_MW_NUMLIGHT:
             // F3DEX2: data = NUML(n) = n * 24; +1 to include ambient slot.
             g_rsp.num_lights = (int)(data / 24) + 1;
+            if (g_rsp.num_lights < 1) {
+                g_rsp.num_lights = 1;
+            } else if (g_rsp.num_lights > GFX_MAX_LIGHTS + 1) {
+                g_rsp.num_lights = GFX_MAX_LIGHTS + 1;
+            }
             g_rsp.lights_dirty = true;
             break;
         case G_MW_FOG:
             g_rsp.fog_mul    = (s16)(data >> 16);
             g_rsp.fog_offset = (s16)(data & 0xFFFF);
             break;
+        case G_MW_SEGMENT: {
+            u32 segment = (u32)cmd->words.w0 & 0xFFFFu;
+
+            segment /= 4u;
+            if (segment < 16u) {
+                void *default_base = gfx_default_segment_base((u8)segment);
+
+                g_rsp.segments[segment] = default_base != NULL ? default_base : gfx_resolve_addr(data);
+            }
+            break;
+        }
     }
 }
 
@@ -417,7 +752,7 @@ static void gfx_rdp_set_other_mode_l(const Gfx *cmd) {
 static void gfx_rdp_set_texture_image(const Gfx *cmd) {
     g_rdp.tex_to_load.fmt       = (u8)C0(21, 3);
     g_rdp.tex_to_load.siz       = (u8)C0(19, 2);
-    g_rdp.tex_to_load.addr      = (const u8 *)(uintptr_t)cmd->words.w1;
+    g_rdp.tex_to_load.addr      = gfx_resolve_addr((uintptr_t)cmd->words.w1);
     g_rdp.tex_to_load.tile_slot = 0;
 }
 
@@ -461,6 +796,9 @@ static void gfx_rdp_load_block(const Gfx *cmd) {
 
     g_rdp.loaded[slot].addr       = g_rdp.tex_to_load.addr;
     g_rdp.loaded[slot].size_bytes = n_bytes;
+    g_rdp.loaded[slot].width      = 0;
+    g_rdp.loaded[slot].height     = 0;
+    g_rdp.loaded[slot].tex_id     = 0;
     g_rdp.textures_dirty[slot]    = true;
 }
 
@@ -485,6 +823,9 @@ static void gfx_rdp_load_tile(const Gfx *cmd) {
 
     g_rdp.loaded[slot].addr       = g_rdp.tex_to_load.addr;
     g_rdp.loaded[slot].size_bytes = texels_to_bytes(g_rdp.tex_to_load.siz, w * h);
+    g_rdp.loaded[slot].width      = 0;
+    g_rdp.loaded[slot].height     = 0;
+    g_rdp.loaded[slot].tex_id     = 0;
     g_rdp.textures_dirty[slot]    = true;
 }
 
@@ -563,12 +904,14 @@ static void gfx_draw_rectangle(s32 ulx, s32 uly, s32 lrx, s32 lry) {
 static void gfx_dp_texture_rectangle(s32 ulx, s32 uly, s32 lrx, s32 lry,
                                       u8 tile, s16 uls, s16 ult,
                                       s16 dsdx, s16 dtdy, bool flip) {
-    (void)tile;
-
     int saved_cc[8] = {
         g_rdp.cc_rgb_a, g_rdp.cc_rgb_b, g_rdp.cc_rgb_c, g_rdp.cc_rgb_d,
         g_rdp.cc_a_a,   g_rdp.cc_a_b,   g_rdp.cc_a_c,   g_rdp.cc_a_d,
     };
+
+    if (tile < 8) {
+        g_rdp.active_texture_slot = (g_rdp.tile[tile].tmem_offset >= 256u) ? 1 : 0;
+    }
 
     if ((g_rdp.other_mode_h & (3u << G_MDSFT_CYCLETYPE)) == G_CYC_COPY) {
         // COPY mode: 4 texels/pixel → divide step by 4 to get 1:1 mapping.
@@ -579,6 +922,11 @@ static void gfx_dp_texture_rectangle(s32 ulx, s32 uly, s32 lrx, s32 lry,
         // Off-by-one edge rule: add 1 pixel in U10.2.
         lrx += 1 << 2;
         lry += 1 << 2;
+    }
+
+    if (flip) {
+        dsdx = -dsdx;
+        dtdy = -dtdy;
     }
 
     s32 width  = !flip ? lrx - ulx : lry - uly;
@@ -619,34 +967,42 @@ static void gfx_rdp_fill_rect(const Gfx *cmd) {
         return;
     }
 
-    s32 ulx = (s32)C1(12, 12);
-    s32 uly = (s32)C1(0,  12);
-    s32 lrx = (s32)C0(12, 12);
-    s32 lry = (s32)C0(0,  12);
+    s32 ulx = (s32)((cmd->words.w1 >> 14) & 0x3FF);
+    s32 uly = (s32)((cmd->words.w1 >>  2) & 0x3FF);
+    s32 lrx = (s32)((cmd->words.w0 >> 14) & 0x3FF);
+    s32 lry = (s32)((cmd->words.w0 >>  2) & 0x3FF);
 
     u32 mode = g_rdp.other_mode_h & (3u << G_MDSFT_CYCLETYPE);
     if (mode == G_CYC_COPY || mode == G_CYC_FILL) {
-        lrx += 1 << 2;
-        lry += 1 << 2;
+        lrx++;
+        lry++;
     }
 
     LoadedVertex *ul = &g_rsp.loaded_vertices[GFX_MAX_VERTICES + 0];
     LoadedVertex *ll = &g_rsp.loaded_vertices[GFX_MAX_VERTICES + 1];
     LoadedVertex *lr = &g_rsp.loaded_vertices[GFX_MAX_VERTICES + 2];
     LoadedVertex *ur = &g_rsp.loaded_vertices[GFX_MAX_VERTICES + 3];
-    ul->r = ll->r = lr->r = ur->r = g_rdp.fill_r;
-    ul->g = ll->g = lr->g = ur->g = g_rdp.fill_g;
-    ul->b = ll->b = lr->b = ur->b = g_rdp.fill_b;
-    ul->a = ll->a = lr->a = ur->a = g_rdp.fill_a;
 
     int saved_cc[8] = {
         g_rdp.cc_rgb_a, g_rdp.cc_rgb_b, g_rdp.cc_rgb_c, g_rdp.cc_rgb_d,
         g_rdp.cc_a_a,   g_rdp.cc_a_b,   g_rdp.cc_a_c,   g_rdp.cc_a_d,
     };
-    g_rdp.cc_rgb_a = 5; g_rdp.cc_rgb_b = 5; g_rdp.cc_rgb_c = 5; g_rdp.cc_rgb_d = 2;
-    g_rdp.cc_a_a   = 5; g_rdp.cc_a_b   = 5; g_rdp.cc_a_c   = 5; g_rdp.cc_a_d   = 2;
 
-    gfx_draw_rectangle(ulx, uly, lrx, lry);
+    if (mode == G_CYC_FILL) {
+        ul->r = ll->r = lr->r = ur->r = g_rdp.fill_r;
+        ul->g = ll->g = lr->g = ur->g = g_rdp.fill_g;
+        ul->b = ll->b = lr->b = ur->b = g_rdp.fill_b;
+        ul->a = ll->a = lr->a = ur->a = g_rdp.fill_a;
+        g_rdp.cc_rgb_a = 5; g_rdp.cc_rgb_b = 5; g_rdp.cc_rgb_c = 5; g_rdp.cc_rgb_d = 2;
+        g_rdp.cc_a_a   = 5; g_rdp.cc_a_b   = 5; g_rdp.cc_a_c   = 5; g_rdp.cc_a_d   = 2;
+    } else {
+        ul->r = ll->r = lr->r = ur->r = 255;
+        ul->g = ll->g = lr->g = ur->g = 255;
+        ul->b = ll->b = lr->b = ur->b = 255;
+        ul->a = ll->a = lr->a = ur->a = 255;
+    }
+
+    gfx_draw_rectangle(ulx << 2, uly << 2, lrx << 2, lry << 2);
 
     g_rdp.cc_rgb_a = saved_cc[0]; g_rdp.cc_rgb_b = saved_cc[1];
     g_rdp.cc_rgb_c = saved_cc[2]; g_rdp.cc_rgb_d = saved_cc[3];
@@ -654,19 +1010,42 @@ static void gfx_rdp_fill_rect(const Gfx *cmd) {
     g_rdp.cc_a_c   = saved_cc[6]; g_rdp.cc_a_d   = saved_cc[7];
 }
 
-// cmd points to the G_TEXRECT entry; cmd+1 = RDPHALF_1, cmd+2 = RDPHALF_2.
-static void gfx_rdp_tex_rect(const Gfx *cmd) {
+// cmd points to the G_TEXRECT entry. PC-generated gDPTextureRectangle stores
+// s/t and dsdx/dtdy in the next Gfx, while gSPTextureRectangle emits them as
+// RDPHALF_1 and RDPHALF_2 commands.
+static int gfx_rdp_tex_rect(const Gfx *raw_cmd, int stride) {
+    int dummy;
+    Gfx texrect = gbi_read_cmd(raw_cmd, &dummy);
+    Gfx params  = gbi_read_cmd((const Gfx *)((const u8 *)raw_cmd + stride), &dummy);
+    const Gfx *cmd = &texrect;
     bool flip = ((u8)(cmd->words.w0 >> 24) == G_TEXRECTFLIP);
     s32  lrx  = (s32)((cmd->words.w0 >> 12) & 0xFFF);
     s32  lry  = (s32)(cmd->words.w0 & 0xFFF);
     u8   tile = (u8)((cmd->words.w1 >> 24) & 0x7);
     s32  ulx  = (s32)((cmd->words.w1 >> 12) & 0xFFF);
     s32  uly  = (s32)(cmd->words.w1 & 0xFFF);
-    s16  uls  = (s16)((cmd + 1)->words.w1 >> 16);
-    s16  ult  = (s16)((cmd + 1)->words.w1 & 0xFFFF);
-    s16  dsdx = (s16)((cmd + 2)->words.w1 >> 16);
-    s16  dtdy = (s16)((cmd + 2)->words.w1 & 0xFFFF);
+    s16  uls;
+    s16  ult;
+    s16  dsdx;
+    s16  dtdy;
+
+    if ((u8)(params.words.w0 >> 24) == G_RDPHALF_1) {
+        Gfx params2 = gbi_read_cmd((const Gfx *)((const u8 *)raw_cmd + stride * 2), &dummy);
+
+        uls = (s16)(params.words.w1 >> 16);
+        ult = (s16)(params.words.w1 & 0xFFFF);
+        dsdx = (s16)(params2.words.w1 >> 16);
+        dtdy = (s16)(params2.words.w1 & 0xFFFF);
+        gfx_dp_texture_rectangle(ulx, uly, lrx, lry, tile, uls, ult, dsdx, dtdy, flip);
+        return stride * 2;
+    }
+
+    uls  = (s16)(params.words.w0 >> 16);
+    ult  = (s16)(params.words.w0 & 0xFFFF);
+    dsdx = (s16)(params.words.w1 >> 16);
+    dtdy = (s16)(params.words.w1 & 0xFFFF);
     gfx_dp_texture_rectangle(ulx, uly, lrx, lry, tile, uls, ult, dsdx, dtdy, flip);
+    return stride;
 }
 
 static void gfx_rdp_set_scissor(const Gfx *cmd) {
@@ -684,11 +1063,11 @@ static void gfx_rdp_set_scissor(const Gfx *cmd) {
 }
 
 static void gfx_rdp_set_color_image(const Gfx *cmd) {
-    g_rdp.color_buf_addr = (void *)(uintptr_t)cmd->words.w1;
+    g_rdp.color_buf_addr = gfx_resolve_addr((uintptr_t)cmd->words.w1);
 }
 
 static void gfx_rdp_set_z_image(const Gfx *cmd) {
-    g_rdp.z_buf_addr = (void *)(uintptr_t)cmd->words.w1;
+    g_rdp.z_buf_addr = gfx_resolve_addr((uintptr_t)cmd->words.w1);
 }
 
 static void gfx_rdp_set_blend_color(const Gfx *cmd)  { (void)cmd; }
@@ -905,14 +1284,26 @@ static void gbi_dump_cmd(u8 opcode, const Gfx *cmd) {
 
 void gbi_init(void) {
     rdp_state_init();
+    s_texel0_slot = -1;
+    s_texel0_id = 0;
+    s_texel1_id = 0;
 }
 
 void gbi_run_dl(Gfx *dl) {
     Gfx *stack[GFX_DL_STACK_DEPTH];
     int  stack_depth = 0;
     Gfx *cmd = dl;
+    static u32 unknown_opcode_warnings = 0;
 
     while (1) {
+        int stride;
+        if (!gfx_ptr_range_readable(cmd, sizeof(*cmd))) {
+            return;
+        }
+        Gfx decoded_cmd = gbi_read_cmd(cmd, &stride);
+        Gfx *raw_cmd = cmd;
+
+        cmd = &decoded_cmd;
         u8 opcode = (u8)(cmd->words.w0 >> 24);
         if (gfx_dump_dl) gbi_dump_cmd(opcode, cmd);
 
@@ -922,17 +1313,19 @@ void gbi_run_dl(Gfx *dl) {
                 break;
 
             case G_DL: {
-                Gfx *target = (Gfx *)(uintptr_t)cmd->words.w1;
+                Gfx *target = gfx_resolve_addr((uintptr_t)cmd->words.w1);
                 if (C0(16, 8) == G_DL_PUSH && stack_depth < GFX_DL_STACK_DEPTH) {
-                    stack[stack_depth++] = cmd + 1;
+                    stack[stack_depth++] = (Gfx *)((u8 *)raw_cmd + stride);
                 }
-                cmd = target;
+                raw_cmd = target;
+                cmd = raw_cmd;
                 continue;
             }
 
             case G_ENDDL:
                 if (stack_depth == 0) return;
-                cmd = stack[--stack_depth];
+                raw_cmd = stack[--stack_depth];
+                cmd = raw_cmd;
                 continue;
 
             // RDPHALF_1/2 encode the s/t and dsdx/dtdy for texture rectangles.
@@ -947,7 +1340,7 @@ void gbi_run_dl(Gfx *dl) {
 
             case G_VTX:
                 gfx_sp_vertex((int)C0(12, 8), (int)(C0(1, 7) - C0(12, 8)),
-                              (const Vtx *)(uintptr_t)cmd->words.w1);
+                              gfx_resolve_addr((uintptr_t)cmd->words.w1));
                 break;
             case G_MODIFYVTX:      gfx_sp_modify_vertex(cmd);     break;
             case G_CULLDL:         gfx_sp_cull_dl(cmd);           break;
@@ -962,7 +1355,7 @@ void gbi_run_dl(Gfx *dl) {
                 gfx_sp_tri1((u8)(C0(16, 8) / 2), (u8)(C0(8, 8) / 2), (u8)(C0(0, 8) / 2));
                 gfx_sp_tri1((u8)(C1(16, 8) / 2), (u8)(C1(8, 8) / 2), (u8)(C1(0, 8) / 2));
                 break;
-            case G_MTX:    gfx_sp_matrix((u8)(C0(0, 8) ^ G_MTX_PUSH), (const s32 *)(uintptr_t)cmd->words.w1); break;
+            case G_MTX:    gfx_sp_matrix((u8)(C0(0, 8) ^ G_MTX_PUSH), gfx_resolve_addr((uintptr_t)cmd->words.w1)); break;
             case G_POPMTX: gfx_sp_pop_matrix(cmd->words.w1 / 64); break;
             case G_GEOMETRYMODE:   gfx_sp_geometry_mode(cmd);     break;
             case G_TEXTURE:        gfx_sp_texture(cmd);           break;
@@ -984,12 +1377,11 @@ void gbi_run_dl(Gfx *dl) {
             case G_SETFILLCOLOR:   gfx_rdp_set_fill_color(cmd);   break;
             case G_FILLRECT:       gfx_rdp_fill_rect(cmd);        break;
 
-            // Texture rectangle: 3 Gfx words: TEXRECT, RDPHALF_1, RDPHALF_2.
-            // Advance past the two trailing RDPHALF words before the loop's cmd++.
+            // TEXRECT followed by either packed DP params or
+            // the RDPHALF_1/RDPHALF_2 pair emitted by gSPTextureRectangle.
             case G_TEXRECT:
             case G_TEXRECTFLIP:
-                gfx_rdp_tex_rect(cmd);
-                cmd += 2;
+                raw_cmd = (Gfx *)((u8 *)raw_cmd + gfx_rdp_tex_rect(raw_cmd, stride));
                 break;
 
             case G_SETSCISSOR:     gfx_rdp_set_scissor(cmd);      break;
@@ -1003,11 +1395,19 @@ void gbi_run_dl(Gfx *dl) {
                 gfx_flush();
                 break;
 
-            default:
-                fprintf(stderr, "gbi: unknown opcode 0x%02X\n", opcode);
+            case G_LINE3D:
+            case G_LOAD_UCODE:
+            case G_SETPRIMDEPTH:
                 break;
+
+            default:
+                if (unknown_opcode_warnings < 16) {
+                    fprintf(stderr, "gbi: unknown opcode 0x%02X\n", opcode);
+                    unknown_opcode_warnings++;
+                }
+                return;
         }
 
-        cmd++;
+        cmd = (Gfx *)((u8 *)raw_cmd + stride);
     }
 }
