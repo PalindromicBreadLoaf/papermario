@@ -40,10 +40,14 @@ u32 audio_pc_open_device(u32 freq) {
 
 void audio_pc_push_samples(const s16 *buf, int n_stereo_frames) {
     if (!sDevice || !buf || n_stereo_frames <= 0) return;
-    // Matching sm64-port, don't overfill the queue beyond ~6000 stereo frames.
-    if (SDL_GetQueuedAudioSize(sDevice) < (u32)(6000 * 2 * sizeof(s16))) {
-        SDL_QueueAudio(sDevice, buf, (u32)(n_stereo_frames * 2 * sizeof(s16)));
+
+    // Keep SDL's queue near two audio frames so nuAuMgr is paced by the
+    // device instead of running ahead and dropping already-advanced BGM frames.
+    const u32 target_bytes = (u32)(1200 * 2 * sizeof(s16));
+    while (SDL_GetQueuedAudioSize(sDevice) > target_bytes) {
+        SDL_Delay(1);
     }
+    SDL_QueueAudio(sDevice, buf, (u32)(n_stereo_frames * 2 * sizeof(s16)));
 }
 
 u32 audio_pc_get_freq(void) {

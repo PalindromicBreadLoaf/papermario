@@ -4,6 +4,7 @@
 #include <nu/nusys.h>
 
 extern void boot_main(void *);
+extern void nu_audio_init(void);
 
 static OSThread sIdleThread;
 static OSThread sMainThread;
@@ -14,6 +15,7 @@ static void boot_idle_pc(void *arg) {
     (void)arg;
     nuPiInit();
     nuScCreateScheduler(OS_VI_NTSC_LAN1, 1);
+    nu_audio_init();
     osCreateThread(&sMainThread, NU_MAIN_THREAD_ID, boot_main, NULL,
                    &sMainStack[NU_SC_STACK_SIZE / sizeof(u64)], NU_MAIN_THREAD_PRI);
     osStartThread(&sMainThread);

@@ -9,6 +9,10 @@
 // Must be called once before any au_syn_* function or alAudioFrame.
 void pc_syn_init(void);
 
+// Allow the PC audio thread to begin mixing once the game audio engine has
+// finished creating its global clients.
+void pc_syn_set_audio_clients_ready(void);
+
 // Drives the per-frame game audio callbacks and fills outBuf with interleaved
 // stereo s16 PCM. cmdList is returned unchanged; *cmdLen is set to 0.
 Acmd *alAudioFrame(Acmd *cmdList, s32 *cmdLen, s16 *outBuf, s32 outLen);

@@ -1,3 +1,5 @@
+#include "common.h"
+#include "audio.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -7,7 +9,16 @@
 #include <PR/libaudio.h>
 #include "audio_mix.h"
 #include "audio_pc.h"
+#include "asset_loader.h"
 #include "syn_driver_pc.h"
+
+void *pc_resolve_physical_addr(uintptr_t addr);
+
+// Keep overflow allocations in low static storage so AU_FILE_RELATIVE pointer
+// truncation still resolves to valid PC addresses.
+#define PC_AUDIO_OVERFLOW_POOL_SIZE (8 * 1024 * 1024)
+static u8  sPcAudioOverflowPool[PC_AUDIO_OVERFLOW_POOL_SIZE];
+static u8 *sPcAudioOverflowCur = sPcAudioOverflowPool;
 
 #define PC_SYN_N_VOICES 24
 #define PC_SYN_N_BUSES  4
@@ -53,13 +64,6 @@ typedef struct Instrument {
 } Instrument;
 #endif
 
-// AuSynDriver and ALConfig are large game structs; forward-declare opaquely so
-// au_driver_init can be stubbed without pulling in the full game headers.
-#ifndef _AUDIO_H_
-typedef struct AuSynDriver AuSynDriver;
-typedef struct ALConfig    ALConfig;
-#endif
-
 typedef struct {
     u8   pan;     // 0..127 constant-power panning position
     u16  volume;  // squared volume in game units: (vol^2 >> 15), 0..0x7FFF
@@ -72,6 +76,7 @@ static u16           sBusGain[PC_SYN_N_BUSES];
 static bool          sStereoEnabled = true;
 static bool          sUseGlobalVolume = false;
 static u16           sGlobalVolume = 0x7FFF;
+static volatile bool sAudioClientsReady = false;
 
 static PcAudioDriver sDriver;
 
@@ -107,15 +112,34 @@ static void compute_vol_lr(u8 voiceIdx) {
     }
 }
 
+// PM_AUDIO_OFF=1 skips engine client updates while the PC audio path is being
+// repaired, which lets the rest of the port run after audio-thread crashes.
+static int pc_audio_engine_disabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("PM_AUDIO_OFF");
+        cached = (env != NULL && env[0] != '\0' && env[0] != '0') ? 1 : 0;
+    }
+    return cached;
+}
+
 static void syn_pre_video_frame(void) {
+    if (pc_audio_engine_disabled()) {
+        return;
+    }
     au_update_clients_for_video_frame();
 }
 
 static void syn_pre_audio_frame(void) {
+    if (pc_audio_engine_disabled()) {
+        return;
+    }
     au_update_clients_for_audio_frame();
 }
 
 void pc_syn_init(void) {
+    sAudioClientsReady = false;
+
     for (int i = 0; i < PC_SYN_N_VOICES; i++) {
         sVoices[i].frame_cache_idx = -1;
         sVoiceState[i].pan         = EQ_MID;
@@ -133,9 +157,27 @@ void pc_syn_init(void) {
     audio_mix_set_driver(&sDriver);
 }
 
+void pc_syn_set_audio_clients_ready(void) {
+    sAudioClientsReady = true;
+}
+
+// On PC there is no RSP audio task, so render PCM here and leave cmdLen zero
+// to keep nuAuMgr out of the task-reply wait path.
 Acmd *alAudioFrame(Acmd *cmdList, s32 *cmdLen, s16 *outBuf, s32 outLen) {
+    outBuf = pc_resolve_physical_addr((uintptr_t)outBuf);
     *cmdLen = 0;
-    pc_audio_frame(outBuf, outLen);
+
+    if (outBuf == NULL || outLen <= 0) {
+        return cmdList;
+    }
+
+    if (!sAudioClientsReady) {
+        memset(outBuf, 0, (size_t)outLen * 2 * sizeof(s16));
+    } else {
+        pc_audio_frame(outBuf, outLen);
+    }
+
+    audio_pc_push_samples(outBuf, outLen);
     return cmdList;
 }
 
@@ -362,12 +404,179 @@ void au_disable_channel_delay(void)        {}
 void au_init_delay_channel(s16 arg0)      { (void)arg0; }
 
 void au_driver_init(AuSynDriver *driver, ALConfig *config) {
+    if (gActiveSynDriverPtr != NULL) {
+        return;
+    }
+
+    memset(driver, 0, sizeof(*driver));
+    driver->num_pvoice = config->num_pvoice;
+    driver->num_bus = config->num_bus;
+    driver->outputRate = config->outputRate;
+    driver->dmaNew = config->dmaNew;
+    driver->heap = config->heap;
+
     gActiveSynDriverPtr = driver;
     gSynDriverPtr = driver;
-    (void)config;
 }
 
 void au_driver_release(void) {}
+
+#define PC_BK_SIG_BK 0x424B
+#define PC_BK_SIG_CR 0x4352
+
+// PC override of au_load_BK_to_bank from src/audio/core/engine.c.
+//
+// N64 BK instruments are fixed 0x30-byte records with 32-bit pointers. The PC
+// struct has native pointers, so parse fields by N64 offset and build a native
+// Instrument with ROM-backed sample data and BK-local loop/predictor/envelope
+// pointers. nu_pi.c has already swapped multi-byte fields to host order.
+BKFileBuffer *au_load_BK_to_bank(s32 bkFileOffset, BKFileBuffer *bkFile,
+                                 s32 bankIndex, BankSet bankSet) {
+    ALHeap *heap = gSynDriverPtr->heap;
+    BKHeader localHeader;
+
+    au_read_rom(bkFileOffset, &localHeader, sizeof(localHeader));
+    if (localHeader.signature != PC_BK_SIG_BK
+            || localHeader.size == 0
+            || localHeader.format != PC_BK_SIG_CR) {
+        return bkFile;
+    }
+
+    s32 size = ALIGN16_(localHeader.instrumetsLength)
+             + ALIGN16_(localHeader.loopStatesLength)
+             + ALIGN16_(localHeader.predictorsLength)
+             + ALIGN16_(localHeader.envelopesLength)
+             + sizeof(BKHeader);
+
+    if (bkFile == NULL) {
+        bkFile = alHeapAlloc(heap, 1, size);
+        if (bkFile == NULL) {
+            return NULL;
+        }
+    }
+    au_read_rom(bkFileOffset, bkFile, size);
+
+    InstrumentBank *group = au_get_BK_instruments(bankSet, (u32)bankIndex);
+    if (group == NULL) {
+        return bkFile;
+    }
+
+    Instrument *defaultInstrument = gSoundGlobals->defaultInstrument;
+    f32 outputRate = gSoundGlobals->outputRate;
+    u8 *fileBytes = (u8 *)bkFile;
+
+    if (bkFile->header.swizzled) {
+        return bkFile;
+    }
+
+    for (int i = 0; i < 16; i++) {
+        u16 instOffset = bkFile->header.instruments[i];
+        if (instOffset == 0) {
+            (*group)[i] = defaultInstrument;
+            continue;
+        }
+
+        Instrument *ins = alHeapAlloc(heap, 1, sizeof(Instrument));
+        if (ins == NULL) {
+            (*group)[i] = defaultInstrument;
+            continue;
+        }
+
+        u8 *src = fileBytes + instOffset;
+        u32 wavDataOff   = *(u32 *)(src + 0x00);
+        u32 wavDataLen   = *(u32 *)(src + 0x04);
+        u32 loopStateOff = *(u32 *)(src + 0x08);
+        s32 loopStart    = *(s32 *)(src + 0x0C);
+        s32 loopEnd      = *(s32 *)(src + 0x10);
+        s32 loopCount    = *(s32 *)(src + 0x14);
+        u32 predictorOff = *(u32 *)(src + 0x18);
+        u16 codebookSize = *(u16 *)(src + 0x1C);
+        u16 keyBase      = *(u16 *)(src + 0x1E);
+        s32 sampleRate   = *(s32 *)(src + 0x20);
+        u8  type         = src[0x24];
+        u32 envOff       = *(u32 *)(src + 0x2C);
+
+        if (wavDataOff != 0) {
+            u32 romOffset = (u32)bkFileOffset + wavDataOff;
+            const void *romPtr = asset_loader_rom_ptr(romOffset, wavDataLen);
+            ins->wavData = (u8 *)romPtr;
+            if (ins->wavData == NULL) {
+                wavDataLen = 0;
+            }
+        } else {
+            ins->wavData = NULL;
+        }
+        ins->wavDataLength = wavDataLen;
+        ins->loopState     = loopStateOff ? (ADPCM_STATE *)(fileBytes + loopStateOff) : NULL;
+        ins->loopStart     = loopStart;
+        ins->loopEnd       = loopEnd;
+        ins->loopCount     = loopCount;
+        ins->predictor     = predictorOff ? (s16 *)(fileBytes + predictorOff) : NULL;
+        ins->codebookSize  = codebookSize;
+        ins->keyBase       = keyBase;
+        ins->pitchRatio    = (f32)sampleRate / outputRate;
+        ins->type          = type;
+        ins->useDma        = true;
+        ins->envelopes     = envOff ? (EnvelopePreset *)(fileBytes + envOff) : NULL;
+
+        (*group)[i] = ins;
+    }
+
+    bkFile->header.swizzled = true;
+    return bkFile;
+}
+
+// PC override of au_load_BK_headers from src/audio/load_banks.c.
+//
+// Fill unused bank slots with defaultInstrument before loading referenced BK
+// files so unexpected bank/patch commands do not dereference NULL.
+void au_load_BK_headers(AuGlobals *globals, ALHeap *heap) {
+    Instrument *defaultInst = globals->defaultInstrument;
+    if (defaultInst != NULL) {
+        InstrumentBank *groups[] = {
+            globals->defaultBankSet,
+            globals->musicBankSet,
+            globals->auxBankSet,
+            globals->bankSet2,
+            globals->bankSet4,
+            globals->bankSet5,
+            globals->bankSet6,
+        };
+        s32 groupCounts[] = {
+            ARRAY_COUNT(globals->defaultBankSet),
+            ARRAY_COUNT(globals->musicBankSet),
+            ARRAY_COUNT(globals->auxBankSet),
+            ARRAY_COUNT(globals->bankSet2),
+            ARRAY_COUNT(globals->bankSet4),
+            ARRAY_COUNT(globals->bankSet5),
+            ARRAY_COUNT(globals->bankSet6),
+        };
+        for (size_t g = 0; g < ARRAY_COUNT(groups); g++) {
+            for (s32 b = 0; b < groupCounts[g]; b++) {
+                for (s32 i = 0; i < 16; i++) {
+                    groups[g][b][i] = defaultInst;
+                }
+            }
+        }
+    }
+
+    InitBankEntry buffer[INIT_BANK_BUFFER_SIZE];
+    if (globals->bkListLength == 0 || globals->bkListLength > (s32)sizeof(buffer)) {
+        return;
+    }
+
+    au_read_rom(globals->bkFileListOffset, &buffer, globals->bkListLength);
+
+    for (s32 i = 0; i < (s32)ARRAY_COUNT(buffer); i++) {
+        if (buffer[i].fileIndex == 0xFFFF) {
+            break;
+        }
+        SBNFileEntry fileEntry;
+        if (au_fetch_SBN_file(buffer[i].fileIndex, AU_FMT_BK, &fileEntry) == AU_RESULT_OK) {
+            au_load_BK_to_bank(fileEntry.offset, NULL, buffer[i].bankIndex, buffer[i].bankSet);
+        }
+    }
+}
 
 // Linear bump-allocator matching the game's ALHeap behaviour.
 void alHeapInit(ALHeap *hp, u8 *base, s32 len) {
@@ -381,7 +590,14 @@ void *alHeapDBAlloc(u8 *file, s32 line, ALHeap *hp, s32 num, s32 size) {
     (void)file; (void)line;
     s32 bytes = (num * size + 7) & ~7;
     if (hp->cur + bytes > hp->base + hp->len) {
-        fprintf(stderr, "alHeapDBAlloc: out of heap memory\n");
+        size_t used = (size_t)(sPcAudioOverflowCur - sPcAudioOverflowPool);
+        if (used + (size_t)bytes <= sizeof(sPcAudioOverflowPool)) {
+            void *ptr = sPcAudioOverflowCur;
+            sPcAudioOverflowCur += bytes;
+            memset(ptr, 0, (size_t)bytes);
+            return ptr;
+        }
+        fprintf(stderr, "alHeapDBAlloc: out of audio heap and overflow pool\n");
         return NULL;
     }
     void *ptr = hp->cur;
