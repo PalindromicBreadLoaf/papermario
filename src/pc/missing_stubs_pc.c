@@ -1,15 +1,51 @@
 #include "common.h"
 #include "model.h"
 #include "nu/nusys.h"
+#include "sprite.h"
 
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 
-BackgroundHeader gBackgroundImage;
+typedef struct PcBackgroundImageStorage {
+    BackgroundHeader header;
+    u8 data[0x40000];
+} PcBackgroundImageStorage;
+
+PcBackgroundImageStorage gBackgroundImageStorage = { 0 };
+extern BackgroundHeader gBackgroundImage __attribute__((alias("gBackgroundImageStorage")));
 HeapNode heap_battleHead;
 Addr sprite_shading_profiles_data_ROM_START;
 u64 n_aspMainTextStart[1];
 u64 n_aspMainDataStart[1];
+
+extern HeapNode heap_spriteHead;
+
+static u32 pc_low32_ptr(const void* ptr) {
+    return (u32)(uintptr_t)ptr;
+}
+
+SpriteAnimData* spr_load_sprite(s32 idx, s32 isPlayerSprite, s32 useTailAlloc) {
+    u32* header = _heap_malloc(&heap_spriteHead, 5 * sizeof(*header));
+    u32* emptyList = _heap_malloc(&heap_spriteHead, sizeof(*emptyList));
+
+    (void)idx;
+    (void)isPlayerSprite;
+    (void)useTailAlloc;
+
+    emptyList[0] = (u32)(uintptr_t)PTR_LIST_END;
+    header[0] = pc_low32_ptr(emptyList);
+    header[1] = 0;
+    header[2] = 0;
+    header[3] = 0;
+    header[4] = 0;
+    return (SpriteAnimData*)header;
+}
+
+void spr_load_npc_extra_anims(SpriteAnimData* header, u32* extraAnimList) {
+    (void)header;
+    (void)extraAnimList;
+}
 
 void osSetTime(OSTime time) {
     (void)time;
@@ -41,8 +77,8 @@ s32 osFlashReadArray(OSIoMesg* mb, s32 priority, u32 pageNum, void* dramAddr, u3
     (void)priority;
     (void)pageNum;
     (void)nPages;
-    (void)mq;
     mem_clear(dramAddr, (s32)(nPages * 128));
+    osSendMesg(mq, NULL, OS_MESG_BLOCK);
     return 0;
 }
 
@@ -50,7 +86,7 @@ s32 osFlashWriteBuffer(OSIoMesg* mb, s32 priority, void* dramAddr, OSMesgQueue* 
     (void)mb;
     (void)priority;
     (void)dramAddr;
-    (void)mq;
+    osSendMesg(mq, NULL, OS_MESG_BLOCK);
     return 0;
 }
 
