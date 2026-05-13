@@ -2,6 +2,7 @@
 #include "model.h"
 #include "nu/nusys.h"
 #include "sprite.h"
+#include "syn_driver_pc.h"
 
 #include <stdarg.h>
 #include <stdint.h>
@@ -105,6 +106,7 @@ void load_obfuscation_shims(void) {
 
 void create_audio_system_obfuscated(void) {
     create_audio_system();
+    pc_syn_set_audio_clients_ready();
 }
 
 void load_engine_data_obfuscated(void) {
