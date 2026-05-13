@@ -59,3 +59,14 @@ void asset_loader_shutdown(void) {
     sRomBuffer = NULL;
     sRomSize = 0;
 }
+
+u32 asset_loader_rom_size(void) {
+    return sRomSize;
+}
+
+const void *asset_loader_rom_ptr(u32 rom_offset, u32 size) {
+    if (!sRomBuffer || rom_offset >= sRomSize || size > sRomSize - rom_offset) {
+        return NULL;
+    }
+    return sRomBuffer + rom_offset;
+}

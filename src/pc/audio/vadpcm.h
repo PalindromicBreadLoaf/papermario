@@ -17,10 +17,12 @@ typedef struct {
     int order;
 } VadpcmBook;
 
-// Build the expanded codebook from raw big-endian s16 values stored in BK files.
-// raw_be: pointer to npredictors * order * 8 consecutive big-endian s16 values.
+// Build the expanded codebook from raw s16 coefficients stored in host byte order.
+// On PC the BK loader byte-swaps the predictors region after loading from ROM
+// (see pc_swap_bk_header in src/pc/nusys/nu_pi.c), so coefs[] is native-endian.
+// coefs: pointer to npredictors * order * 8 consecutive s16 values.
 // Returns NULL on allocation failure.
-VadpcmBook *vadpcm_book_create(const u8 *raw_be, int order, int npredictors);
+VadpcmBook *vadpcm_book_create(const s16 *coefs, int order, int npredictors);
 void        vadpcm_book_free(VadpcmBook *book);
 
 // Decode one 9-byte ADPCM frame into 16 PCM s16 samples.

@@ -2,10 +2,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-static s16 read_be_s16(const u8 *p) {
-    return (s16)(((u16)p[0] << 8) | p[1]);
-}
-
 static s32 inner_product(int length, const s32 *v1, const s32 *v2) {
     s32 out = 0;
     for (int i = 0; i < length; i++) {
@@ -16,8 +12,8 @@ static s32 inner_product(int length, const s32 *v1, const s32 *v2) {
     return (out - fiout < 0) ? dout - 1 : dout;
 }
 
-VadpcmBook *vadpcm_book_create(const u8 *raw_be, int order, int npredictors) {
-    if (!raw_be || order <= 0 || order > VADPCM_MAX_ORDER || npredictors <= 0) {
+VadpcmBook *vadpcm_book_create(const s16 *coefs, int order, int npredictors) {
+    if (!coefs || order <= 0 || order > VADPCM_MAX_ORDER || npredictors <= 0) {
         return NULL;
     }
 
@@ -33,15 +29,14 @@ VadpcmBook *vadpcm_book_create(const u8 *raw_be, int order, int npredictors) {
     book->order        = order;
     book->npredictors  = npredictors;
 
-    const u8 *p = raw_be;
+    const s16 *p = coefs;
     for (int pred = 0; pred < npredictors; pred++) {
         s32 (*te)[VADPCM_MAX_ORDER + 8] = book->predictors[pred].coef;
 
-        // Raw layout in the file: [order][8] — for each tap j, read 8 big-endian s16 values.
+        // Raw layout in the file is [order][8]
         for (int j = 0; j < order; j++) {
             for (int k = 0; k < 8; k++) {
-                te[k][j] = read_be_s16(p);
-                p += 2;
+                te[k][j] = (s32)(*p++);
             }
         }
 

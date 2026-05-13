@@ -37,7 +37,7 @@ static void mix_voice(PcVoiceInfo *v, s32 *acc_l, s32 *acc_r, int n) {
             if (v->predictor && v->codebook_size > 0) {
                 int npred = (int)v->codebook_size / (ADPCM_ORDER * 8 * 2);
                 if (npred > 0)
-                    v->book = vadpcm_book_create(v->predictor, ADPCM_ORDER, npred);
+                    v->book = vadpcm_book_create((const s16 *)v->predictor, ADPCM_ORDER, npred);
             }
             v->last_predictor = v->predictor;
             v->last_cbsize    = v->codebook_size;
