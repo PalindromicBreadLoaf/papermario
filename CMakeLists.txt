@@ -1,12 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
 project(papermario_pc VERSION 0.1.0 LANGUAGES C ASM)
 
-# -DBUILD_PC=ON selects the host PC build. The existing Ninja/N64 build is
-# driven by ./configure + ninja and is completely unaffected by this file.
-option(BUILD_PC "Build the PC port (parallel to the N64 Ninja build)" ON)
+# CMake is exclusively used for the PC build.
+option(BUILD_PC "Build the PC port" ON)
 
 if(NOT BUILD_PC)
-    message(STATUS "BUILD_PC=OFF - nothing configured. Pass -DBUILD_PC=ON to enable the PC port.")
+    message(STATUS "BUILD_PC=OFF. Pass -DBUILD_PC=ON to enable the PC port.")
     return()
 endif()
 
@@ -135,6 +134,14 @@ list(FILTER GAME_SRC EXCLUDE REGEX ".*/src/world/area_dro/dro_01/npc_shop_owner\
 
 set_source_files_properties(${GAME_SRC} PROPERTIES
     COMPILE_DEFINITIONS "PC_GAME_SOURCE"
+)
+
+# BSS files define N64 layout-ordered zero-init globals for the N64 linker script.
+# On PC, the real definitions come from the game source files.
+# Compiling bss files with M2CTX makes BSS=static so every symbol is file-local
+file(GLOB BSS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/bss/*.c")
+set_source_files_properties(${BSS_SOURCES} PROPERTIES
+    COMPILE_DEFINITIONS "M2CTX"
 )
 
 set(PC_WIDE_CONSTANT_INIT_SRC
