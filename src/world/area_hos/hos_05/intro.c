@@ -1489,12 +1489,24 @@ void N(worker_draw_story_graphics)(void) {
 
 void N(load_story_image)(s32 loadBackImage, s32 imageIdx) {
     s32 i;
+    u8* img;
+    u16* pal;
 
     imageIdx--;
     if (imageIdx < 0) {
-        u16* pal = N(StoryGraphicsPtr)->palFront;
+        if (!loadBackImage) {
+            img = N(StoryGraphicsPtr)->imgFront;
+            pal = N(StoryGraphicsPtr)->palFront;
+        } else {
+            img = N(StoryGraphicsPtr)->imgBack;
+            pal = N(StoryGraphicsPtr)->palBack;
+        }
 
-        // overwrite palette to fill entire frame with subtle off-white coloring
+        for (i = 0; i < STORY_IMG_SIZE; i++) {
+            img[i] = 0;
+        }
+
+        // Fill the frame with off-white.
         for (i = 0; i < 256; i++) {
             *pal++ = GPACK_RGBA5551(212, 212, 212, 1);
         }

@@ -1,3 +1,4 @@
+#include <stdint.h>
 #include "common.h"
 #include "audio.h"
 #include "audio/public.h"
@@ -179,17 +180,17 @@ void state_init_title_screen(void) {
     decode_yay0(titleData, titleDataDst);
     general_heap_free(titleData);
 
-    TitleScreen_ImgList_Logo = (s32*)(TitleScreen_ImgList->logo + (s32) TitleScreen_ImgList);
-    TitleScreen_ImgList_Copyright = (u8 (*)[COPYRIGHT_WIDTH]) ((s32*)(TitleScreen_ImgList->copyright + (s32) TitleScreen_ImgList));
-    TitleScreen_ImgList_PressStart = (s32*)(TitleScreen_ImgList->pressStart + (s32) TitleScreen_ImgList);
+    TitleScreen_ImgList_Logo = (s32*)((uintptr_t) TitleScreen_ImgList + (u32) TitleScreen_ImgList->logo);
+    TitleScreen_ImgList_Copyright = (u8 (*)[COPYRIGHT_WIDTH]) ((uintptr_t) TitleScreen_ImgList + (u32) TitleScreen_ImgList->copyright);
+    TitleScreen_ImgList_PressStart = (s32*)((uintptr_t) TitleScreen_ImgList + (u32) TitleScreen_ImgList->pressStart);
 #if VERSION_JP
-    TitleScreen_ImgList_CopyrightPalette = (s32*)(TitleScreen_ImgList->copyrightPalette + (s32) TitleScreen_ImgList);
+    TitleScreen_ImgList_CopyrightPalette = (s32*)((uintptr_t) TitleScreen_ImgList + (u32) TitleScreen_ImgList->copyrightPalette);
 #endif
 #if VERSION_PAL
     TitleMenu_ImgList = heap_malloc((s32)titlemenu_DATA_SIZE);
     dma_copy(titlemenu_ROM_START, titlemenu_ROM_END, TitleMenu_ImgList);
-    TitleMenu_ImgList_StartGame = (u8*)(TitleMenu_ImgList[gCurrentLanguage].startGame + (s32) TitleMenu_ImgList);
-    TitleMenu_ImgList_Languages = (u8*)(TitleMenu_ImgList[gCurrentLanguage].languages + (s32) TitleMenu_ImgList);
+    TitleMenu_ImgList_StartGame = (u8*)((uintptr_t) TitleMenu_ImgList + (uintptr_t) TitleMenu_ImgList[gCurrentLanguage].startGame);
+    TitleMenu_ImgList_Languages = (u8*)((uintptr_t) TitleMenu_ImgList + (uintptr_t) TitleMenu_ImgList[gCurrentLanguage].languages);
 #endif
 
     create_cameras();
