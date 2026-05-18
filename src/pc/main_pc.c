@@ -2,6 +2,7 @@
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <SDL2/SDL.h>
 #include "asset_loader.h"
@@ -71,7 +72,7 @@ static void pc_install_signal_handlers(void) {
 #endif
 
 int main(int argc, char *argv[]) {
-    const char *rom_path = DEFAULT_ROM_PATH;
+    const char *rom_path = NULL;
     bool dump_dl = false;
 
     pc_install_signal_handlers();
@@ -82,6 +83,14 @@ int main(int argc, char *argv[]) {
         } else {
             rom_path = argv[i];
         }
+    }
+
+    // Resolution order: CLI arg, PM64_ROM, then default path.
+    if (rom_path == NULL) {
+        rom_path = getenv("PM64_ROM");
+    }
+    if (rom_path == NULL) {
+        rom_path = DEFAULT_ROM_PATH;
     }
 
     asset_loader_init(rom_path);
