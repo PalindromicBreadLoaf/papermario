@@ -620,16 +620,15 @@ void update_scripts(void) {
     IsUpdatingScripts = false;
 }
 
-// Does nothing, is cursed
+// Preserves the original no-op script-list scan.
 void func_802C3EE4(void) {
-    s32 temp;
     s32 i;
 
     for (i = 0; i < gScriptListCount; i++) {
-        temp = (s32) (*gCurrentScriptListPtr)[gScriptIndexList[i]];
-        temp = *((s32*) temp);
-        if (temp == gScriptIdList[i]) {
-            temp = 1;
+        Evt* script = (*gCurrentScriptListPtr)[gScriptIndexList[i]];
+
+        if (script != nullptr && script->id == gScriptIdList[i]) {
+            s32 temp = 1;
         }
     }
 }
