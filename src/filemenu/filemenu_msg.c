@@ -730,7 +730,13 @@ void filemenu_draw_message(u8* message, s32 x, s32 y, s32 alpha, s32 color, u32 
         }
     }
 
+#if defined(BUILD_PC)
+    // PC host pointers do not survive the N64 KSEG sign-bit test; treat values
+    // outside the small character-id range as message pointers.
+    if ((uintptr_t)message >= 0x100) {
+#else
     if ((s32) message < 0) {
+#endif
         u8* tmp;
         filemenu_draw_char(0xF3, x, y, flag1, color, flag2);
         tmp = message;
