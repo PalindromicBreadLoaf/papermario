@@ -4,6 +4,11 @@
 #include "sprite.h"
 
 #include "charset/charset.h"
+#if defined(BUILD_PC)
+#define PC_REMAP_CHARSET_OFFSET_SYMBOLS
+#include "pc_charset_offsets.h"
+#undef PC_REMAP_CHARSET_OFFSET_SYMBOLS
+#endif
 #include "charset/postcard.png.h"
 #include "charset/letter_content_1.png.h"
 

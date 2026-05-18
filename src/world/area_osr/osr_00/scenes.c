@@ -1,6 +1,11 @@
 #include "osr_00.h"
 #include "ld_addrs.h"
 #include "charset/charset.h"
+#if defined(BUILD_PC)
+#define PC_REMAP_CHARSET_OFFSET_SYMBOLS
+#include "pc_charset_offsets.h"
+#undef PC_REMAP_CHARSET_OFFSET_SYMBOLS
+#endif
 
 #include "sprite/npc/Luigi.h"
 

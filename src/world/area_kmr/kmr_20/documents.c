@@ -2,6 +2,11 @@
 #include "hud_element.h"
 #include "ld_addrs.h"
 #include "charset/charset.h"
+#if defined(BUILD_PC)
+#define PC_REMAP_CHARSET_OFFSET_SYMBOLS
+#include "pc_charset_offsets.h"
+#undef PC_REMAP_CHARSET_OFFSET_SYMBOLS
+#endif
 
 #define PACKED_BYTE(base, i) \
     (i / 8) + EVT_INDEX_OF_GAME_BYTE(base)
