@@ -12,7 +12,8 @@ void texture_cache_init(void);
 // width/height: dimensions in texels (from the tile descriptor).
 // cms/cmt: tile wrap/clamp flags from TileDesc.
 unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
-                                u32 size_bytes, const u8 *tlut,
+                                u32 size_bytes, u32 stride_bytes,
+                                const u8 *tlut,
                                 u16 width, u16 height,
                                 u8 cms, u8 cmt);
 

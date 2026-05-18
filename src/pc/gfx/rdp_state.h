@@ -84,14 +84,17 @@ typedef struct {
         const u8 *addr;      // pointer into ROM buffer set by gDPSetTextureImage
         u8        fmt;       // G_IM_FMT_* of the image being loaded
         u8        siz;       // G_IM_SIZ_* of the image being loaded
-        int       tile_slot; // target tile slot (G_TX_LOADTILE → TMEM half)
+        u16       width;     // source image width in texels (gDPSetTextureImage)
+        int       tile_slot; // target tile slot for G_TX_LOADTILE
     } tex_to_load;
 
     struct {
         const u8 *addr;
         u32       size_bytes;
+        u32       stride_bytes;
         u16       width;
         u16       height;
+        u8        tile;
         unsigned int tex_id;
     } loaded[2];             // currently loaded data for tile slots 0 and 1
 
@@ -99,6 +102,7 @@ typedef struct {
     const u8 *tlut;          // RGBA5551 palette (big-endian), set by gDPLoadTLUT
     bool textures_dirty[2];  // set when load or tile-desc changes
     int active_texture_slot; // texture slot selected by the current render tile
+    u8  active_texture_tile; // render tile selected by gSPTexture / gSPTextureRectangle
 
     // Color registers
     u8 env_r,  env_g,  env_b,  env_a;

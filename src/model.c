@@ -4591,6 +4591,10 @@ void execute_render_tasks(void) {
     Matrix4f mtxFlipY;
     void (*appendGfx)(void*);
 
+#if BUILD_PC
+#define PC_RENDER_FUNC_VALID(fn) ((uintptr_t)(fn) >= 0x400000u && (uintptr_t)(fn) < 0x1000000u)
+#endif
+
     if (RenderTaskCount == 0) {
         return;
     }
@@ -4667,6 +4671,12 @@ void execute_render_tasks(void) {
             task = &taskList[sorted[i]];
             appendGfx = task->appendGfx;
 
+#if BUILD_PC
+            if (!PC_RENDER_FUNC_VALID(appendGfx)) {
+                continue;
+            }
+#endif
+
             if (task->renderMode & RENDER_TASK_FLAG_REFLECT_FLOOR) {
                 savedGfxPos = gMainGfxPos++;
             }
@@ -4686,9 +4696,18 @@ void execute_render_tasks(void) {
         for (i = 0; i < taskCount; i++) {
             task = &taskList[sorted[i]];
             appendGfx = task->appendGfx;
+#if BUILD_PC
+            if (!PC_RENDER_FUNC_VALID(appendGfx)) {
+                continue;
+            }
+#endif
             appendGfx(task->appendGfxArg);
         }
     }
+
+#if BUILD_PC
+#undef PC_RENDER_FUNC_VALID
+#endif
 
     RenderTaskListIdx++;
     if (RenderTaskListIdx > ARRAY_COUNT(RenderTaskLists) - 1) {

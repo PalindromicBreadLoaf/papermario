@@ -13,6 +13,7 @@ typedef struct {
     u8        fmt;
     u8        siz;
     u32       size_bytes;
+    u32       stride_bytes;
     const u8 *tlut;
     u16       width;
     u16       height;
@@ -29,11 +30,12 @@ void texture_cache_init(void) {
     s_cache_invalidated = false;
 }
 
-static unsigned int cache_hash(const u8 *addr, u8 fmt, u8 siz, u32 size_bytes,
+static unsigned int cache_hash(const u8 *addr, u8 fmt, u8 siz, u32 size_bytes, u32 stride_bytes,
                                 const u8 *tlut, u16 width, u16 height, u8 cms, u8 cmt) {
     uintptr_t h = (uintptr_t)addr * 2654435761u;
     h ^= (uintptr_t)tlut * 40503u;
     h ^= (uintptr_t)size_bytes * 2246822519u;
+    h ^= (uintptr_t)stride_bytes * 374761393u;
     h ^= (uintptr_t)((u32)fmt | ((u32)siz << 8) | ((u32)width << 16) | ((u32)height << 24))
          * 3266489917u;
     h ^= (uintptr_t)((u32)cms | ((u32)cmt << 8)) * 668265263u;
@@ -44,6 +46,16 @@ static GLenum wrap_mode(u8 flag) {
     if (flag & G_TX_CLAMP)  return GL_CLAMP_TO_EDGE;
     if (flag & G_TX_MIRROR) return GL_MIRRORED_REPEAT;
     return GL_REPEAT;
+}
+
+static u32 tex_row_bytes(u8 siz, u16 width) {
+    switch (siz) {
+        case G_IM_SIZ_4b:  return ((u32)width + 1u) / 2u;
+        case G_IM_SIZ_8b:  return width;
+        case G_IM_SIZ_16b: return (u32)width * 2u;
+        case G_IM_SIZ_32b: return (u32)width * 4u;
+        default:           return 0;
+    }
 }
 
 static bool ptr_range_readable(const void *ptr, size_t size) {
@@ -87,7 +99,8 @@ static bool ptr_range_readable(const void *ptr, size_t size) {
 }
 
 unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
-                                u32 size_bytes, const u8 *tlut,
+                                u32 size_bytes, u32 stride_bytes,
+                                const u8 *tlut,
                                 u16 width, u16 height,
                                 u8 cms, u8 cmt) {
     if (s_cache_invalidated) {
@@ -95,10 +108,19 @@ unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
     }
 
     if (!addr || !size_bytes || !width || !height) return 0;
-    if (!ptr_range_readable(addr, size_bytes)) return 0;
+    u32 row_bytes = tex_row_bytes(siz, width);
+    if (!row_bytes) return 0;
+    if (stride_bytes == 0) {
+        stride_bytes = row_bytes;
+    }
+    if (stride_bytes < row_bytes) return 0;
+    u32 packed_bytes = row_bytes * (u32)height;
+    if (size_bytes < packed_bytes) return 0;
+    u32 footprint = row_bytes + ((u32)height - 1u) * stride_bytes;
+    if (!ptr_range_readable(addr, footprint)) return 0;
     if (fmt == G_IM_FMT_CI && !ptr_range_readable(tlut, 0x200)) return 0;
 
-    unsigned int idx = cache_hash(addr, fmt, siz, size_bytes, tlut, width, height, cms, cmt);
+    unsigned int idx = cache_hash(addr, fmt, siz, packed_bytes, stride_bytes, tlut, width, height, cms, cmt);
 
     unsigned int free_slot = TEX_CACHE_SLOTS;
     for (unsigned int i = 0; i < TEX_CACHE_SLOTS; i++) {
@@ -111,7 +133,7 @@ unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
         }
 
         if (e->addr == addr && e->fmt == fmt && e->siz == siz &&
-            e->size_bytes == size_bytes && e->tlut == tlut &&
+            e->size_bytes == packed_bytes && e->stride_bytes == stride_bytes && e->tlut == tlut &&
             e->width == width && e->height == height &&
             e->cms == cms && e->cmt == cmt) {
             return e->tex_id;
@@ -125,11 +147,26 @@ unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
         s_cache[free_slot].tex_id = 0;
     }
 
-    u32 dst_bytes = tex_conv_rgba8_size(fmt, siz, size_bytes);
-    u8 *buf = (u8 *)malloc(dst_bytes);
-    if (!buf) return 0;
+    const u8 *src = addr;
+    u8 *packed = NULL;
+    if (stride_bytes != row_bytes) {
+        packed = (u8 *)malloc(packed_bytes);
+        if (!packed) return 0;
+        for (u32 y = 0; y < height; y++) {
+            memcpy(packed + y * row_bytes, addr + y * stride_bytes, row_bytes);
+        }
+        src = packed;
+    }
 
-    if (tex_conv_to_rgba8(fmt, siz, addr, size_bytes, tlut, buf) != TEX_CONV_OK) {
+    u32 dst_bytes = tex_conv_rgba8_size(fmt, siz, packed_bytes);
+    u8 *buf = (u8 *)malloc(dst_bytes);
+    if (!buf) {
+        free(packed);
+        return 0;
+    }
+
+    if (tex_conv_to_rgba8(fmt, siz, src, packed_bytes, tlut, buf) != TEX_CONV_OK) {
+        free(packed);
         free(buf);
         return 0;
     }
@@ -139,6 +176,7 @@ unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
     glBindTexture(GL_TEXTURE_2D, tex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0,
                  GL_RGBA, GL_UNSIGNED_BYTE, buf);
+    free(packed);
     free(buf);
 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, (GLint)wrap_mode(cms));
@@ -153,7 +191,8 @@ unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
     e->addr       = addr;
     e->fmt        = fmt;
     e->siz        = siz;
-    e->size_bytes = size_bytes;
+    e->size_bytes = packed_bytes;
+    e->stride_bytes = stride_bytes;
     e->tlut       = tlut;
     e->width      = width;
     e->height     = height;

@@ -31,6 +31,9 @@ void rdp_state_init(void) {
 
     g_rdp.viewport_dirty = true;
     g_rdp.blend_dirty    = true;  // force GL state setup on first draw
+    g_rdp.loaded[0].tile = 0;
+    g_rdp.loaded[1].tile = 1;
+    g_rdp.active_texture_tile = 0;
 
     // Default combiner: output = (0 - 0) * 0 + shade = shade.
     // Slots A/B/C are zero (5); D points at shade (2) for both RGB and alpha.

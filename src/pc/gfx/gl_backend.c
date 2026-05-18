@@ -10,19 +10,23 @@
 static const char *s_vert_src =
     "#version 330 core\n"
     "layout(location = 0) in vec4 a_pos;\n"
-    "layout(location = 1) in vec2 a_uv;\n"
-    "layout(location = 2) in vec4 a_color;\n"
-    "out vec2 v_uv;\n"
+    "layout(location = 1) in vec2 a_uv0;\n"
+    "layout(location = 2) in vec2 a_uv1;\n"
+    "layout(location = 3) in vec4 a_color;\n"
+    "out vec2 v_uv0;\n"
+    "out vec2 v_uv1;\n"
     "out vec4 v_color;\n"
     "void main() {\n"
-    "    v_uv        = a_uv;\n"
+    "    v_uv0       = a_uv0;\n"
+    "    v_uv1       = a_uv1;\n"
     "    v_color     = a_color;\n"
     "    gl_Position = a_pos;\n"
     "}\n";
 
 static const char *s_frag_src =
     "#version 330 core\n"
-    "in vec2 v_uv;\n"
+    "in vec2 v_uv0;\n"
+    "in vec2 v_uv1;\n"
     "in vec4 v_color;\n"
     "uniform sampler2D u_tex0;\n"
     "uniform sampler2D u_tex1;\n"
@@ -41,8 +45,8 @@ static const char *s_frag_src =
     "uniform int  u_cc_a_d;\n"
     "out vec4 frag_color;\n"
     "void main() {\n"
-    "    vec4 tex0 = (u_use_tex >= 1) ? texture(u_tex0, v_uv) : vec4(1.0);\n"
-    "    vec4 tex1 = (u_use_tex >= 2) ? texture(u_tex1, v_uv) : vec4(1.0);\n"
+    "    vec4 tex0 = ((u_use_tex & 1) != 0) ? texture(u_tex0, v_uv0) : vec4(1.0);\n"
+    "    vec4 tex1 = ((u_use_tex & 2) != 0) ? texture(u_tex1, v_uv1) : vec4(1.0);\n"
     "    vec3 rgb_src[7] = vec3[7](\n"
     "        tex0.rgb, tex1.rgb, v_color.rgb, u_prim.rgb, u_env.rgb,\n"
     "        vec3(0.0), vec3(1.0));\n"
@@ -155,7 +159,7 @@ void gl_backend_init(const char *title, int width, int height) {
         glDebugMessageCallback(gl_debug_callback, NULL);
     }
 
-    // Fixed layout: vec4 pos (loc 0) | vec2 uv (loc 1) | vec4 color (loc 2)
+    // Fixed layout: vec4 pos (loc 0) | vec2 uv0 (loc 1) | vec2 uv1 (loc 2) | vec4 color (loc 3)
     glGenVertexArrays(1, &s_vao);
     glBindVertexArray(s_vao);
 
@@ -168,7 +172,9 @@ void gl_backend_init(const char *title, int width, int height) {
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride, (void *)(4 * sizeof(float)));
     glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, stride, (void *)(6 * sizeof(float)));
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, (void *)(6 * sizeof(float)));
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, stride, (void *)(8 * sizeof(float)));
 
     GLuint vs = compile_shader(GL_VERTEX_SHADER,   s_vert_src);
     GLuint fs = compile_shader(GL_FRAGMENT_SHADER, s_frag_src);
@@ -234,8 +240,37 @@ void gl_backend_start_frame(void) {
     glEnable(GL_SCISSOR_TEST);
 }
 
+static void gl_backend_dump_screenshot(int frame_index) {
+    char path[64];
+    snprintf(path, sizeof(path), "/tmp/pm_frame_%05d.rgba", frame_index);
+    int w = gl_window_width;
+    int h = gl_window_height;
+    if (w <= 0 || h <= 0) return;
+    size_t bytes = (size_t)w * (size_t)h * 4u;
+    unsigned char *buf = (unsigned char *)malloc(bytes);
+    if (!buf) return;
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, buf);
+    FILE *f = fopen(path, "wb");
+    if (f) {
+        fwrite(&w, sizeof(w), 1, f);
+        fwrite(&h, sizeof(h), 1, f);
+        fwrite(buf, 1, bytes, f);
+        fclose(f);
+    }
+    free(buf);
+}
+
 void gl_backend_end_frame(void) {
     gfx_flush();
+    static int frame_counter = 0;
+    const char *env = getenv("PM_DUMP_FRAMES");
+    if (env && *env) {
+        int interval = atoi(env);
+        if (interval > 0 && (frame_counter % interval) == 0) {
+            gl_backend_dump_screenshot(frame_counter);
+        }
+    }
+    frame_counter++;
     SDL_GL_SwapWindow(s_window);
 }
 

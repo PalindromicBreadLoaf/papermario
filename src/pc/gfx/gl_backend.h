@@ -3,9 +3,9 @@
 
 #include <stddef.h>
 
-// VBO layout: 10 floats per vertex: x,y,z,w | u,v | r,g,b,a
+// VBO layout: 12 floats per vertex: x,y,z,w | u0,v0 | u1,v1 | r,g,b,a
 #define GFX_MAX_BUFFERED   256
-#define GFX_FLOATS_PER_VTX  10
+#define GFX_FLOATS_PER_VTX  12
 
 extern float  gfx_buf_vbo[GFX_MAX_BUFFERED * 3 * GFX_FLOATS_PER_VTX];
 extern size_t gfx_buf_vbo_len;

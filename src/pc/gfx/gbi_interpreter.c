@@ -11,6 +11,9 @@
 void* pc_tlb_translate(void* vaddr);
 void* pc_resolve_physical_addr(uintptr_t addr);
 extern u8 gMapShapeData[];
+extern u8 gPcShapeArena[];
+extern u32 gPcMapShapeDataSize;
+extern u32 gPcMapShapePayloadShift;
 
 // Bit-field extractors for GBI command words.  Both gbi_run_dl and all static
 // handler functions receive a 'cmd' pointer; the macros expand using that name.
@@ -18,9 +21,9 @@ extern u8 gMapShapeData[];
 #define C1(pos, width) ((cmd->words.w1 >> (pos)) & ((1u << (width)) - 1u))
 #define PC_SHAPE_KSEG_BASE  0x80210000u
 #define PC_SHAPE_PHYS_BASE  0x00210000u
+#define PC_SHAPE_HEADER_SIZE 0x20u
 #define PC_SHAPE_SIZE_LIMIT 0x40000u
 
-static int s_texel0_slot = -1;
 static unsigned int s_texel0_id;
 static unsigned int s_texel1_id;
 
@@ -41,11 +44,47 @@ static inline s16 read_be_s16(const void *ptr) {
     return (s16)read_be16(ptr);
 }
 
+static uintptr_t gfx_shape_data_size(void) {
+    return gPcMapShapeDataSize != 0 ? gPcMapShapeDataSize : PC_SHAPE_SIZE_LIMIT;
+}
+
+static uintptr_t gfx_shape_source_size(void) {
+    if (gPcMapShapeDataSize > gPcMapShapePayloadShift) {
+        return gPcMapShapeDataSize - gPcMapShapePayloadShift;
+    }
+    return PC_SHAPE_SIZE_LIMIT;
+}
+
+static uintptr_t gfx_shape_offset(uintptr_t offset) {
+    if (offset >= PC_SHAPE_HEADER_SIZE) {
+        return offset + gPcMapShapePayloadShift;
+    }
+    return offset;
+}
+
 static bool ptr_in_map_shape(const void *ptr, size_t size) {
     uintptr_t start = (uintptr_t)ptr;
-    uintptr_t base = (uintptr_t)gMapShapeData;
+    uintptr_t base = (uintptr_t)gPcShapeArena;
+    uintptr_t shape_size = gfx_shape_data_size();
 
-    return start >= base && size <= PC_SHAPE_SIZE_LIMIT && start - base <= PC_SHAPE_SIZE_LIMIT - size;
+    return start >= base && size <= shape_size && start - base <= shape_size - size;
+}
+
+static bool gfx_is_sign_extended_32(uintptr_t addr) {
+#if UINTPTR_MAX > 0xffffffffu
+    return addr >= UINT64_C(0xffffffff80000000);
+#else
+    (void)addr;
+    return false;
+#endif
+}
+
+static bool gfx_is_guest_kseg_addr(uintptr_t addr) {
+    u32 low = (u32)addr;
+
+    return (addr <= 0xffffffffu || gfx_is_sign_extended_32(addr))
+        && low >= 0x80000000u
+        && low < 0xC0000000u;
 }
 
 static bool gbi_opcode_known(u8 opcode) {
@@ -103,19 +142,43 @@ static bool gbi_opcode_known(u8 opcode) {
 }
 
 // Decode one display-list command and report its byte stride.
-// PC-native commands are 16 bytes (two uintptr_t). N64 big-endian commands
-// are 8 bytes: the N64's w0 sits in the low 32 bits of the PC w0, and the
-// N64's w1 sits in the HIGH 32 bits of the PC w0 (not in PC w1).
-// stride_bytes is set to 8 for N64 commands, sizeof(Gfx) for PC commands.
+// PC command words are pointer-sized. Decompressed map shape display lists
+// remain packed as 8-byte N64 commands, with w0/w1 in the low/high halves on
+// 64-bit hosts.
 static Gfx gbi_read_cmd(const Gfx *src, int *stride_bytes) {
     Gfx cmd = *src;
+    u32 packed_w0 = (u32)cmd.words.w0;
+    u32 packed_w1;
     u8 opcode = (u8)(cmd.words.w0 >> 24);
     u8 swapped_opcode = (u8)cmd.words.w0;
 
+#if UINTPTR_MAX > 0xffffffffu
+    packed_w1 = (u32)(cmd.words.w0 >> 32);
+#else
+    packed_w1 = (u32)cmd.words.w1;
+#endif
+
+    if (ptr_in_map_shape(src, sizeof(u32) * 2)) {
+        opcode = (u8)(packed_w0 >> 24);
+        if (gbi_opcode_known(opcode)) {
+            cmd.words.w0 = packed_w0;
+            cmd.words.w1 = packed_w1;
+            *stride_bytes = (int)(sizeof(u32) * 2);
+            return cmd;
+        }
+
+        swapped_opcode = (u8)packed_w0;
+        if (gbi_opcode_known(swapped_opcode)) {
+            cmd.words.w0 = bswap32(packed_w0);
+            cmd.words.w1 = bswap32(packed_w1);
+            *stride_bytes = (int)(sizeof(u32) * 2);
+            return cmd;
+        }
+    }
+
     if (!gbi_opcode_known(opcode) && gbi_opcode_known(swapped_opcode)) {
-        u32 n64_w1 = cmd.words.w1;
-        cmd.words.w0 = bswap32(cmd.words.w0);
-        cmd.words.w1 = bswap32(n64_w1);
+        cmd.words.w0 = bswap32(packed_w0);
+        cmd.words.w1 = bswap32(packed_w1);
         *stride_bytes = 8;
     } else {
         *stride_bytes = (int)sizeof(Gfx);
@@ -125,7 +188,7 @@ static Gfx gbi_read_cmd(const Gfx *src, int *stride_bytes) {
 
 static void *gfx_default_segment_base(u8 segment) {
     if (segment == 1) {
-        return ((void **)gMapShapeData)[1];
+        return ((void **)gPcShapeArena)[1];
     }
     return NULL;
 }
@@ -217,57 +280,58 @@ static bool gfx_ptr_range_readable(const void *ptr, size_t size) {
 }
 
 static void *gfx_resolve_addr(uintptr_t addr) {
-    uintptr_t resolved = addr;
-    u8 segment = (u8)(addr >> 24);
+    uintptr_t guest_addr = gfx_is_sign_extended_32(addr) ? (uintptr_t)(u32)addr : addr;
+    uintptr_t resolved = guest_addr;
+    bool is_guest_kseg = gfx_is_guest_kseg_addr(addr);
+    u8 segment = (u8)(guest_addr >> 24);
     void *default_base;
 
-    // PC host pointers into gMapShapeData (e.g. shape DLs) pass straight through;
-    // they must not be decoded as N64 segment-relative addresses even if their
-    // high byte accidentally matches a known segment number.
-    uintptr_t shape_start = (uintptr_t)gMapShapeData;
-    if (addr >= shape_start && addr < shape_start + PC_SHAPE_SIZE_LIMIT) {
+    // Host pointers into the shape arena are already resolved.
+    uintptr_t shape_start = (uintptr_t)gPcShapeArena;
+    uintptr_t shape_size = gfx_shape_data_size();
+    if (addr >= shape_start && addr < shape_start + shape_size) {
         return (void *)addr;
     }
 
-    // PC-generated display lists may carry either full host pointers or the
-    // low 32 bits returned by osVirtualToPhysical(). Resolve those before
-    // interpreting the value as an N64 segmented address.
-    void *host_ptr = pc_resolve_physical_addr(addr);
-    if (gfx_ptr_range_readable(host_ptr, 1)) {
-        return host_ptr;
+    if (!is_guest_kseg) {
+        // Host display lists may carry full pointers or low-32 physical values.
+        // Skip this for guest KSEG addresses.
+        void *host_ptr = pc_resolve_physical_addr(addr);
+        if (gfx_ptr_range_readable(host_ptr, 1)) {
+            return host_ptr;
+        }
     }
 
     default_base = gfx_default_segment_base(segment);
 
     if (default_base != NULL) {
-        return (u8 *)default_base + (addr & 0x00FFFFFFu);
+        return (u8 *)default_base + (guest_addr & 0x00FFFFFFu);
     }
 
     if (segment < 16 && g_rsp.segments[segment] != NULL) {
-        return (u8 *)g_rsp.segments[segment] + (addr & 0x00FFFFFFu);
+        return (u8 *)g_rsp.segments[segment] + (guest_addr & 0x00FFFFFFu);
     }
 
-    if (addr >= PC_SHAPE_KSEG_BASE && addr < PC_SHAPE_KSEG_BASE + PC_SHAPE_SIZE_LIMIT) {
-        return gMapShapeData + (addr - PC_SHAPE_KSEG_BASE);
+    uintptr_t shape_source_size = gfx_shape_source_size();
+    if (guest_addr >= PC_SHAPE_KSEG_BASE && guest_addr - PC_SHAPE_KSEG_BASE < shape_source_size) {
+        return gPcShapeArena + gfx_shape_offset(guest_addr - PC_SHAPE_KSEG_BASE);
     }
 
-    if (addr >= PC_SHAPE_PHYS_BASE && addr < PC_SHAPE_PHYS_BASE + PC_SHAPE_SIZE_LIMIT) {
-        return gMapShapeData + (addr - PC_SHAPE_PHYS_BASE);
+    if (guest_addr >= PC_SHAPE_PHYS_BASE && guest_addr - PC_SHAPE_PHYS_BASE < shape_source_size) {
+        return gPcShapeArena + gfx_shape_offset(guest_addr - PC_SHAPE_PHYS_BASE);
     }
 
-#if UINTPTR_MAX > 0xffffffffu
-    if (addr >= UINT64_C(0xffffffff80000000)) {
-        resolved = (uintptr_t)((u32)addr + 0x80000000u);
-    } else
-#endif
-    if (addr >= 0x80000000u && addr < 0xC0000000u) {
-        resolved = (uintptr_t)((u32)addr + 0x80000000u);
+    if (is_guest_kseg) {
+        resolved = (uintptr_t)((u32)guest_addr + 0x80000000u);
     }
 
     void *tlb_ptr = pc_tlb_translate((void *)resolved);
 
     if (tlb_ptr != (void *)resolved) {
         return tlb_ptr;
+    }
+    if (is_guest_kseg) {
+        return (void *)resolved;
     }
     return pc_resolve_physical_addr(resolved);
 }
@@ -509,7 +573,8 @@ static void gfx_ensure_textures(void) {
 
         if (!g_rdp.loaded[i].addr || !g_rdp.loaded[i].size_bytes) continue;
 
-        TileDesc *td   = &g_rdp.tile[i];
+        u8 tile = g_rdp.loaded[i].tile < 8 ? g_rdp.loaded[i].tile : (u8)i;
+        TileDesc *td   = &g_rdp.tile[tile];
         u16 width  = (td->lrs > td->uls) ? (u16)((td->lrs - td->uls) / 4 + 1) : 1;
         u16 height = (td->lrt > td->ult) ? (u16)((td->lrt - td->ult) / 4 + 1) : 1;
         const u8 *tlut = (td->fmt == G_IM_FMT_CI) ? g_rdp.tlut : NULL;
@@ -517,6 +582,7 @@ static void gfx_ensure_textures(void) {
         unsigned int tex_id = texture_cache_get(g_rdp.loaded[i].addr,
                                                 td->fmt, td->siz,
                                                 g_rdp.loaded[i].size_bytes,
+                                                g_rdp.loaded[i].stride_bytes,
                                                 tlut, width, height,
                                                 td->cms, td->cmt);
         if (tex_id) {
@@ -528,19 +594,16 @@ static void gfx_ensure_textures(void) {
 }
 
 static void gfx_bind_active_textures(int tex_slot) {
-    unsigned int tex0_id = g_rdp.loaded[tex_slot].tex_id;
-    unsigned int tex1_id = 0;
+    (void)tex_slot;
+    // The combiner names TMEM slot 0 as TEXEL0 and slot 1 as TEXEL1.
+    unsigned int tex0_id = g_rdp.loaded[0].tex_id;
+    unsigned int tex1_id = g_rdp.loaded[1].tex_id;
 
-    if (tex_slot + 1 < 2) {
-        tex1_id = g_rdp.loaded[tex_slot + 1].tex_id;
-    }
-
-    if (s_texel0_slot == tex_slot && s_texel0_id == tex0_id && s_texel1_id == tex1_id) {
+    if (s_texel0_id == tex0_id && s_texel1_id == tex1_id) {
         return;
     }
 
     gfx_flush();
-    s_texel0_slot = tex_slot;
     s_texel0_id = tex0_id;
     s_texel1_id = tex1_id;
 
@@ -551,7 +614,8 @@ static void gfx_bind_active_textures(int tex_slot) {
         gfx_bind_texture(1, tex1_id);
     }
 
-    gfx_use_tex = tex0_id == 0 ? 0 : (tex1_id == 0 ? 1 : 2);
+    // Let tex1 remain valid even when tex0 is empty.
+    gfx_use_tex = (tex0_id != 0 ? 1 : 0) | (tex1_id != 0 ? 2 : 0);
 }
 
 static void gfx_ensure_viewport(void) {
@@ -595,27 +659,56 @@ static void gfx_sp_tri1(u8 v0, u8 v1, u8 v2) {
 
     gfx_ensure_viewport();
     gfx_ensure_blend_state();
-    gfx_ensure_textures();
 
     int tex_slot = g_rdp.active_texture_slot;
-    if (tex_slot < 0 || tex_slot > 1 || !g_rdp.loaded[tex_slot].addr) {
-        tex_slot = (gfx_use_tex > 0) ? gfx_use_tex - 1 : 0;
+    if (tex_slot < 0 || tex_slot > 1) {
+        tex_slot = 0;
     }
+
+    u8 tile = g_rdp.active_texture_tile < 8 ? g_rdp.active_texture_tile : g_rdp.loaded[tex_slot].tile;
+    if (tile < 8) {
+        tex_slot = (g_rdp.tile[tile].tmem_offset >= 256u) ? 1 : 0;
+        g_rdp.active_texture_slot = tex_slot;
+        if (g_rdp.loaded[tex_slot].tile != tile) {
+            g_rdp.loaded[tex_slot].tile = tile;
+            g_rdp.textures_dirty[tex_slot] = true;
+        }
+    }
+
+    gfx_ensure_textures();
     gfx_bind_active_textures(tex_slot);
     if (gfx_buf_vbo_num_tris == GFX_MAX_BUFFERED) gfx_flush();
 
-    float tex_width = (float)g_rdp.loaded[tex_slot].width;
-    float tex_height = (float)g_rdp.loaded[tex_slot].height;
-    float inv_tex_width = tex_width > 0.0f ? 1.0f / (tex_width * 32.0f) : 1.0f;
-    float inv_tex_height = tex_height > 0.0f ? 1.0f / (tex_height * 32.0f) : 1.0f;
+    (void)tile;
+    float linear_offset = ((g_rdp.other_mode_h & (3u << G_MDSFT_TEXTFILT)) == (u32)G_TF_POINT) ? 0.0f : 16.0f;
+
+    // Build UVs per TMEM slot because TEXEL0 and TEXEL1 can use different tile origins.
+    float inv_w[2], inv_h[2], uls_s105[2], ult_s105[2];
+    for (int s = 0; s < 2; s++) {
+        u8 t = g_rdp.loaded[s].tile < 8 ? g_rdp.loaded[s].tile : (u8)s;
+        const TileDesc *tds = &g_rdp.tile[t];
+        float w = (float)g_rdp.loaded[s].width;
+        float h = (float)g_rdp.loaded[s].height;
+        inv_w[s]    = w > 0.0f ? 1.0f / (w * 32.0f) : 1.0f;
+        inv_h[s]    = h > 0.0f ? 1.0f / (h * 32.0f) : 1.0f;
+        uls_s105[s] = (float)tds->uls * 8.0f;
+        ult_s105[s] = (float)tds->ult * 8.0f;
+    }
 
     for (int i = 0; i < 3; i++) {
+        float u0 = (lv[i]->u - uls_s105[0] + linear_offset) * inv_w[0];
+        float v0 = (lv[i]->v - ult_s105[0] + linear_offset) * inv_h[0];
+        float u1 = (lv[i]->u - uls_s105[1] + linear_offset) * inv_w[1];
+        float v1 = (lv[i]->v - ult_s105[1] + linear_offset) * inv_h[1];
+
         gfx_buf_vbo[gfx_buf_vbo_len++] = lv[i]->x;
         gfx_buf_vbo[gfx_buf_vbo_len++] = lv[i]->y;
         gfx_buf_vbo[gfx_buf_vbo_len++] = lv[i]->z;
         gfx_buf_vbo[gfx_buf_vbo_len++] = lv[i]->w;
-        gfx_buf_vbo[gfx_buf_vbo_len++] = lv[i]->u * inv_tex_width;
-        gfx_buf_vbo[gfx_buf_vbo_len++] = lv[i]->v * inv_tex_height;
+        gfx_buf_vbo[gfx_buf_vbo_len++] = u0;
+        gfx_buf_vbo[gfx_buf_vbo_len++] = v0;
+        gfx_buf_vbo[gfx_buf_vbo_len++] = u1;
+        gfx_buf_vbo[gfx_buf_vbo_len++] = v1;
         gfx_buf_vbo[gfx_buf_vbo_len++] = lv[i]->r / 255.0f;
         gfx_buf_vbo[gfx_buf_vbo_len++] = lv[i]->g / 255.0f;
         gfx_buf_vbo[gfx_buf_vbo_len++] = lv[i]->b / 255.0f;
@@ -659,6 +752,17 @@ static int cc_alpha_to_idx(int mux) {
 static void gfx_sp_texture(const Gfx *cmd) {
     g_rsp.tex_scale.s = (u16)C1(16, 16);
     g_rsp.tex_scale.t = (u16)C1(0, 16);
+
+    if ((cmd->words.w0 & 0xFFu) != 0) {
+        u8 tile = (u8)C0(8, 3);
+
+        g_rdp.active_texture_tile = tile;
+        g_rdp.active_texture_slot = (g_rdp.tile[tile].tmem_offset >= 256u) ? 1 : 0;
+    }
+}
+
+static u32 gfx_sp_tri1_word(const Gfx *cmd) {
+    return (cmd->words.w0 & 0x00FFFFFFu) != 0 ? (u32)cmd->words.w0 : (u32)cmd->words.w1;
 }
 
 // TODO: GBI handlers
@@ -752,6 +856,7 @@ static void gfx_rdp_set_other_mode_l(const Gfx *cmd) {
 static void gfx_rdp_set_texture_image(const Gfx *cmd) {
     g_rdp.tex_to_load.fmt       = (u8)C0(21, 3);
     g_rdp.tex_to_load.siz       = (u8)C0(19, 2);
+    g_rdp.tex_to_load.width     = (u16)(C0(0, 12) + 1u);
     g_rdp.tex_to_load.addr      = gfx_resolve_addr((uintptr_t)cmd->words.w1);
     g_rdp.tex_to_load.tile_slot = 0;
 }
@@ -774,6 +879,10 @@ static void gfx_rdp_set_tile(const Gfx *cmd) {
 
     if (tile == G_TX_LOADTILE) {
         g_rdp.tex_to_load.tile_slot = (tmem >= 256u) ? 1 : 0;
+    } else {
+        int slot = (tmem >= 256u) ? 1 : 0;
+        g_rdp.loaded[slot].tile = (u8)tile;
+        g_rdp.textures_dirty[slot] = true;
     }
 }
 
@@ -796,6 +905,7 @@ static void gfx_rdp_load_block(const Gfx *cmd) {
 
     g_rdp.loaded[slot].addr       = g_rdp.tex_to_load.addr;
     g_rdp.loaded[slot].size_bytes = n_bytes;
+    g_rdp.loaded[slot].stride_bytes = 0;
     g_rdp.loaded[slot].width      = 0;
     g_rdp.loaded[slot].height     = 0;
     g_rdp.loaded[slot].tex_id     = 0;
@@ -818,11 +928,23 @@ static void gfx_rdp_load_tile(const Gfx *cmd) {
     u32 lrs  = C1(12, 12);
     u32 lrt  = C1(0,  12);
     int slot = g_rdp.tex_to_load.tile_slot;
+    u32 src_x = uls / 4u;
+    u32 src_y = ult / 4u;
     u32 w    = (lrs - uls) / 4u + 1u;
     u32 h    = (lrt - ult) / 4u + 1u;
+    u32 img_w = g_rdp.tex_to_load.width;
 
-    g_rdp.loaded[slot].addr       = g_rdp.tex_to_load.addr;
-    g_rdp.loaded[slot].size_bytes = texels_to_bytes(g_rdp.tex_to_load.siz, w * h);
+    // LoadTile can copy a sub-rectangle from a wider source image.
+    u32 row_bytes = (img_w > 0)
+        ? texels_to_bytes(g_rdp.tex_to_load.siz, img_w)
+        : texels_to_bytes(g_rdp.tex_to_load.siz, w);
+    u32 leading_bytes = texels_to_bytes(g_rdp.tex_to_load.siz, src_x);
+    u32 tile_row_bytes = texels_to_bytes(g_rdp.tex_to_load.siz, w);
+    u32 byte_offset = src_y * row_bytes + leading_bytes;
+
+    g_rdp.loaded[slot].addr       = g_rdp.tex_to_load.addr + byte_offset;
+    g_rdp.loaded[slot].size_bytes = tile_row_bytes * h;
+    g_rdp.loaded[slot].stride_bytes = row_bytes;
     g_rdp.loaded[slot].width      = 0;
     g_rdp.loaded[slot].height     = 0;
     g_rdp.loaded[slot].tex_id     = 0;
@@ -841,8 +963,10 @@ static void gfx_rdp_set_tile_size(const Gfx *cmd) {
     g_rdp.tile[tile].lrs = lrs;
     g_rdp.tile[tile].lrt = lrt;
 
-    if (tile < 2) {
-        g_rdp.textures_dirty[tile] = true;
+    for (int i = 0; i < 2; i++) {
+        if (g_rdp.loaded[i].tile == tile) {
+            g_rdp.textures_dirty[i] = true;
+        }
     }
 }
 
@@ -910,6 +1034,7 @@ static void gfx_dp_texture_rectangle(s32 ulx, s32 uly, s32 lrx, s32 lry,
     };
 
     if (tile < 8) {
+        g_rdp.active_texture_tile = tile;
         g_rdp.active_texture_slot = (g_rdp.tile[tile].tmem_offset >= 256u) ? 1 : 0;
     }
 
@@ -931,8 +1056,10 @@ static void gfx_dp_texture_rectangle(s32 ulx, s32 uly, s32 lrx, s32 lry,
 
     s32 width  = !flip ? lrx - ulx : lry - uly;
     s32 height = !flip ? lry - uly : lrx - ulx;
-    float lrs  = (float)(((s32)uls << 7) + (s32)dsdx * width)  / 128.0f;
-    float lrt  = (float)(((s32)ult << 7) + (s32)dtdy * height) / 128.0f;
+    float ul_u = (float)uls;
+    float ul_v = (float)ult;
+    float lr_u = (float)(((s32)uls << 7) + (s32)dsdx * width)  / 128.0f;
+    float lr_v = (float)(((s32)ult << 7) + (s32)dtdy * height) / 128.0f;
 
     LoadedVertex *ul = &g_rsp.loaded_vertices[GFX_MAX_VERTICES + 0];
     LoadedVertex *ll = &g_rsp.loaded_vertices[GFX_MAX_VERTICES + 1];
@@ -944,14 +1071,14 @@ static void gfx_dp_texture_rectangle(s32 ulx, s32 uly, s32 lrx, s32 lry,
     ul->b = ll->b = lr->b = ur->b = 255;
     ul->a = ll->a = lr->a = ur->a = 255;
 
-    ul->u = (float)uls; ul->v = (float)ult;
-    lr->u = lrs;        lr->v = lrt;
+    ul->u = ul_u; ul->v = ul_v;
+    lr->u = lr_u; lr->v = lr_v;
     if (!flip) {
-        ll->u = (float)uls; ll->v = lrt;
-        ur->u = lrs;        ur->v = (float)ult;
+        ll->u = ul_u; ll->v = lr_v;
+        ur->u = lr_u; ur->v = ul_v;
     } else {
-        ll->u = lrs;        ll->v = (float)ult;
-        ur->u = (float)uls; ur->v = lrt;
+        ll->u = lr_u; ll->v = ul_v;
+        ur->u = ul_u; ur->v = lr_v;
     }
 
     gfx_draw_rectangle(ulx, uly, lrx, lry);
@@ -1159,12 +1286,14 @@ static void gbi_dump_cmd(u8 opcode, const Gfx *cmd) {
                     (u8)((cmd->words.w0 >> 1) & 0x7F) - (u8)((cmd->words.w0 >> 12) & 0xFF),
                     cmd->words.w1);
             break;
-        case G_TRI1:
+        case G_TRI1: {
+            u32 tri = gfx_sp_tri1_word(cmd);
             fprintf(stderr, "GBI G_TRI1 v0=%u v1=%u v2=%u\n",
-                    (cmd->words.w1 >> 16) & 0xFF,
-                    (cmd->words.w1 >>  8) & 0xFF,
-                     cmd->words.w1        & 0xFF);
+                    (tri >> 16) & 0xFF,
+                    (tri >>  8) & 0xFF,
+                     tri        & 0xFF);
             break;
+        }
         case G_TRI2:
         case G_QUAD:
             fprintf(stderr, "GBI G_TRI2 [%u %u %u] [%u %u %u]\n",
@@ -1284,7 +1413,6 @@ static void gbi_dump_cmd(u8 opcode, const Gfx *cmd) {
 
 void gbi_init(void) {
     rdp_state_init();
-    s_texel0_slot = -1;
     s_texel0_id = 0;
     s_texel1_id = 0;
 }
@@ -1292,7 +1420,10 @@ void gbi_init(void) {
 void gbi_run_dl(Gfx *dl) {
     Gfx *stack[GFX_DL_STACK_DEPTH];
     int  stack_depth = 0;
+    Gfx *call_origin[GFX_DL_STACK_DEPTH];
+    uintptr_t call_target[GFX_DL_STACK_DEPTH];
     Gfx *cmd = dl;
+    Gfx *dl_origin = dl;
     static u32 unknown_opcode_warnings = 0;
 
     while (1) {
@@ -1315,8 +1446,11 @@ void gbi_run_dl(Gfx *dl) {
             case G_DL: {
                 Gfx *target = gfx_resolve_addr((uintptr_t)cmd->words.w1);
                 if (C0(16, 8) == G_DL_PUSH && stack_depth < GFX_DL_STACK_DEPTH) {
+                    call_origin[stack_depth] = raw_cmd;
+                    call_target[stack_depth] = (uintptr_t)cmd->words.w1;
                     stack[stack_depth++] = (Gfx *)((u8 *)raw_cmd + stride);
                 }
+                dl_origin = target;
                 raw_cmd = target;
                 cmd = raw_cmd;
                 continue;
@@ -1325,6 +1459,7 @@ void gbi_run_dl(Gfx *dl) {
             case G_ENDDL:
                 if (stack_depth == 0) return;
                 raw_cmd = stack[--stack_depth];
+                dl_origin = (stack_depth > 0) ? (Gfx *)call_target[stack_depth - 1] : dl;
                 cmd = raw_cmd;
                 continue;
 
@@ -1345,10 +1480,13 @@ void gbi_run_dl(Gfx *dl) {
             case G_MODIFYVTX:      gfx_sp_modify_vertex(cmd);     break;
             case G_CULLDL:         gfx_sp_cull_dl(cmd);           break;
             case G_BRANCH_Z:       gfx_sp_branch_z(cmd);          break;
-            // F3DEX_GBI_2: G_TRI1 stores vertex indices in w1 (C1), not w0.
-            case G_TRI1:
-                gfx_sp_tri1((u8)(C1(16, 8) / 2), (u8)(C1(8, 8) / 2), (u8)(C1(0, 8) / 2));
+            case G_TRI1: {
+                u32 tri = gfx_sp_tri1_word(cmd);
+
+                gfx_sp_tri1((u8)(((tri >> 16) & 0xFF) / 2), (u8)(((tri >> 8) & 0xFF) / 2),
+                            (u8)((tri & 0xFF) / 2));
                 break;
+            }
             // G_TRI2 and G_QUAD both encode two triangles: first in w0, second in w1.
             case G_TRI2:
             case G_QUAD:
@@ -1402,7 +1540,19 @@ void gbi_run_dl(Gfx *dl) {
 
             default:
                 if (unknown_opcode_warnings < 16) {
-                    fprintf(stderr, "gbi: unknown opcode 0x%02X\n", opcode);
+                    fprintf(stderr, "gbi: unknown opcode 0x%02X w0=0x%016llX w1=0x%016llX raw=%p stride=%d\n",
+                            opcode,
+                            (unsigned long long)cmd->words.w0,
+                            (unsigned long long)cmd->words.w1,
+                            (void *)raw_cmd, stride);
+                    fprintf(stderr, "    dl_origin=%p depth=%d top_dl=%p root=%p\n",
+                            (void *)dl_origin, stack_depth,
+                            stack_depth > 0 ? (void *)call_target[stack_depth - 1] : NULL,
+                            (void *)dl);
+                    for (int d = stack_depth - 1; d >= 0; d--) {
+                        fprintf(stderr, "        [%d] call from %p -> target 0x%016llX\n",
+                                d, (void *)call_origin[d], (unsigned long long)call_target[d]);
+                    }
                     unknown_opcode_warnings++;
                 }
                 return;

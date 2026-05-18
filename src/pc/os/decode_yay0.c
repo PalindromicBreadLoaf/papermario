@@ -21,7 +21,15 @@
 
 extern u8 gMapShapeData[];
 extern u8 gBackgroundImage[];
+extern u8 heap_generalHead[];
 void texture_cache_invalidate_all(void);
+
+u32 gPcMapShapeDataSize;
+u32 gPcMapShapePayloadShift;
+
+// Shape payloads can exceed the shared ShapeFile BSS slot. PC decodes them
+// into a larger arena and mirrors the converted header back to gMapShapeData.
+u8 gPcShapeArena[PC_SHAPE_SIZE_LIMIT];
 
 typedef struct PcModelProperty {
     s32 key;
@@ -95,15 +103,51 @@ static inline int range_valid(u32 offset, u32 size, u32 total_size) {
     return offset < total_size && size <= total_size - offset;
 }
 
+static inline size_t align_up_size(size_t value, size_t align) {
+    return (value + align - 1u) & ~(align - 1u);
+}
+
+static u32 shape_native_header_size(void) {
+    return (u32)align_up_size(5u * sizeof(void *) + 0x0Cu, sizeof(void *));
+}
+
+static u32 shape_arena_size(void) {
+    (void)heap_generalHead;
+    return (u32)sizeof(gPcShapeArena);
+}
+
+static u32 shape_payload_offset(u32 offset) {
+    if (offset >= PC_SHAPE_HEADER_SIZE) {
+        return offset + gPcMapShapePayloadShift;
+    }
+    return offset;
+}
+
+static int shape_range_valid(u32 out_size, u32 offset, u32 size) {
+    u32 adjusted_size = out_size + gPcMapShapePayloadShift;
+    u32 adjusted_offset = shape_payload_offset(offset);
+
+    return adjusted_size >= out_size
+        && range_valid(offset, size, out_size)
+        && range_valid(adjusted_offset, size, adjusted_size);
+}
+
 static int shape_ptr_valid(u32 value, u32 out_size) {
-    return value >= PC_SHAPE_VRAM_BASE && value < PC_SHAPE_VRAM_BASE + out_size;
+    return value >= PC_SHAPE_VRAM_BASE && value - PC_SHAPE_VRAM_BASE < out_size;
 }
 
 static u8 *shape_ptr_to_raw(u8 *dst, u32 out_size, u32 value) {
+    u32 offset;
+
     if (!shape_ptr_valid(value, out_size)) {
         return NULL;
     }
-    return dst + (value - PC_SHAPE_VRAM_BASE);
+
+    offset = value - PC_SHAPE_VRAM_BASE;
+    if (!shape_range_valid(out_size, offset, 1)) {
+        return NULL;
+    }
+    return dst + shape_payload_offset(offset);
 }
 
 static void *shape_ptr_to_host(u8 *dst, u32 out_size, u32 value) {
@@ -114,12 +158,13 @@ static void *shape_ptr_to_host(u8 *dst, u32 out_size, u32 value) {
 
 static PcModelNode *convert_shape_node(u8 *dst, u32 out_size, u32 node_vaddr);
 
-// One bit per 8-byte slot in the shape buffer, set after byte-swapping.
-// Sized for the maximum shape buffer (PC_SHAPE_SIZE_LIMIT / 8 bytes = 8192 bytes).
+// One bit per 8-byte display-list slot in the shape buffer, set after byte-swapping.
 static u8 g_shape_dl_visited[PC_SHAPE_SIZE_LIMIT / 8u];
+static u8 g_shape_mtx_visited[PC_SHAPE_SIZE_LIMIT / 32u];
 
 static char **convert_shape_name_list(u8 *dst, u32 out_size, u32 list_vaddr) {
     u8 *list = shape_ptr_to_raw(dst, out_size, list_vaddr);
+    u32 list_offset;
     u32 count = 0;
     char **converted;
 
@@ -127,7 +172,8 @@ static char **convert_shape_name_list(u8 *dst, u32 out_size, u32 list_vaddr) {
         return NULL;
     }
 
-    while (range_valid(list_vaddr - PC_SHAPE_VRAM_BASE + count * 4u, 4, out_size) && count < 1024) {
+    list_offset = list_vaddr - PC_SHAPE_VRAM_BASE;
+    while (shape_range_valid(out_size, list_offset + count * 4u, 4) && count < 1024) {
         u32 value = read_be32(list + count * 4u);
 
         if (value == 0) {
@@ -155,7 +201,7 @@ static void **convert_shape_child_list(u8 *dst, u32 out_size, u32 list_vaddr, u3
     u8 *list = shape_ptr_to_raw(dst, out_size, list_vaddr);
     void **converted;
 
-    if (list == NULL || count > 4096 || !range_valid(list_vaddr - PC_SHAPE_VRAM_BASE, count * 4u, out_size)) {
+    if (list == NULL || count > 4096 || !shape_range_valid(out_size, list_vaddr - PC_SHAPE_VRAM_BASE, count * 4u)) {
         return NULL;
     }
 
@@ -174,8 +220,11 @@ static PcModelProperty *convert_shape_properties(u8 *dst, u32 out_size, u32 list
     u8 *list = shape_ptr_to_raw(dst, out_size, list_vaddr);
     PcModelProperty *converted;
 
-    if (list == NULL || count > 4096 || !range_valid(list_vaddr - PC_SHAPE_VRAM_BASE, count * PC_MODEL_PROPERTY_SIZE, out_size)) {
-        fprintf(stderr, "[shape] convert_shape_properties FAIL: vaddr=0x%08X count=%u list=%p vram_base=0x%08X out_size=0x%X\n",
+    if (list == NULL || count > 4096
+            || !shape_range_valid(out_size, list_vaddr - PC_SHAPE_VRAM_BASE,
+                                  count * PC_MODEL_PROPERTY_SIZE)) {
+        fprintf(stderr,
+                "[shape] convert_shape_properties FAIL: vaddr=0x%08X count=%u list=%p vram_base=0x%08X out_size=0x%X\n",
                 list_vaddr, count, (void*)list, PC_SHAPE_VRAM_BASE, out_size);
         return NULL;
     }
@@ -207,7 +256,7 @@ static PcModelProperty *convert_shape_properties(u8 *dst, u32 out_size, u32 list
 
 static void swap_shape_dl(u8 *dst, u32 out_size, u32 dl_vaddr, unsigned int depth) {
     u8 *ptr = shape_ptr_to_raw(dst, out_size, dl_vaddr);
-    u8 *end = dst + out_size;
+    u8 *end = dst + out_size + gPcMapShapePayloadShift;
 
     if (ptr == NULL || depth > PC_GBI_DL_MAX_DEPTH) {
         return;
@@ -239,11 +288,42 @@ static void swap_shape_dl(u8 *dst, u32 out_size, u32 dl_vaddr, unsigned int dept
     }
 }
 
+static void swap_shape_mtx(u8 *dst, u32 out_size, u32 mtx_vaddr) {
+    u32 offset;
+    u32 adjusted_offset;
+    u32 word_idx;
+    u8 *mtx;
+
+    if (!shape_ptr_valid(mtx_vaddr, out_size)) {
+        return;
+    }
+
+    offset = mtx_vaddr - PC_SHAPE_VRAM_BASE;
+    if (!shape_range_valid(out_size, offset, 0x40u)) {
+        return;
+    }
+
+    adjusted_offset = shape_payload_offset(offset);
+    word_idx = adjusted_offset / 4u;
+    if (word_idx / 8u >= sizeof(g_shape_mtx_visited)) {
+        return;
+    }
+    if (g_shape_mtx_visited[word_idx / 8u] & (1u << (word_idx % 8u))) {
+        return;
+    }
+    g_shape_mtx_visited[word_idx / 8u] |= (1u << (word_idx % 8u));
+
+    mtx = dst + adjusted_offset;
+    for (u32 i = 0; i < 16; i++) {
+        write_native32(mtx + i * 4u, read_be32(mtx + i * 4u));
+    }
+}
+
 static PcModelDisplayData *convert_shape_display_data(u8 *dst, u32 out_size, u32 display_vaddr) {
     u8 *display = shape_ptr_to_raw(dst, out_size, display_vaddr);
     PcModelDisplayData *converted;
 
-    if (display == NULL || !range_valid(display_vaddr - PC_SHAPE_VRAM_BASE, PC_MODEL_DISPLAY_SIZE, out_size)) {
+    if (display == NULL || !shape_range_valid(out_size, display_vaddr - PC_SHAPE_VRAM_BASE, PC_MODEL_DISPLAY_SIZE)) {
         return NULL;
     }
 
@@ -262,9 +342,10 @@ static PcModelDisplayData *convert_shape_display_data(u8 *dst, u32 out_size, u32
 static PcModelGroupData *convert_shape_group_data(u8 *dst, u32 out_size, u32 group_vaddr) {
     u8 *group = shape_ptr_to_raw(dst, out_size, group_vaddr);
     PcModelGroupData *converted;
+    u32 transform_matrix;
     u32 num_children;
 
-    if (group == NULL || !range_valid(group_vaddr - PC_SHAPE_VRAM_BASE, PC_MODEL_GROUP_SIZE, out_size)) {
+    if (group == NULL || !shape_range_valid(out_size, group_vaddr - PC_SHAPE_VRAM_BASE, PC_MODEL_GROUP_SIZE)) {
         return NULL;
     }
 
@@ -273,8 +354,10 @@ static PcModelGroupData *convert_shape_group_data(u8 *dst, u32 out_size, u32 gro
         return NULL;
     }
 
+    transform_matrix = read_be32(group + 0x00);
     num_children = read_be32(group + 0x0C);
-    converted->transformMatrix = shape_ptr_to_host(dst, out_size, read_be32(group + 0x00));
+    swap_shape_mtx(dst, out_size, transform_matrix);
+    converted->transformMatrix = shape_ptr_to_host(dst, out_size, transform_matrix);
     converted->lightingGroup = shape_ptr_to_host(dst, out_size, read_be32(group + 0x04));
     converted->numLights = (s32)read_be32(group + 0x08);
     converted->numChildren = (s32)num_children;
@@ -287,7 +370,7 @@ static PcModelNode *convert_shape_node(u8 *dst, u32 out_size, u32 node_vaddr) {
     PcModelNode *converted;
     u32 num_properties;
 
-    if (node == NULL || !range_valid(node_vaddr - PC_SHAPE_VRAM_BASE, PC_MODEL_NODE_SIZE, out_size)) {
+    if (node == NULL || !shape_range_valid(out_size, node_vaddr - PC_SHAPE_VRAM_BASE, PC_MODEL_NODE_SIZE)) {
         return NULL;
     }
 
@@ -311,12 +394,23 @@ static void try_convert_shape_file(u8 *dst, u32 out_size) {
     u32 model_names;
     u32 collider_names;
     u32 zone_names;
+    u32 native_header_size;
+    u32 arena_size;
 
-    if (dst != gMapShapeData || out_size < PC_SHAPE_HEADER_SIZE || out_size > PC_SHAPE_SIZE_LIMIT) {
+    if (dst != gPcShapeArena) {
+        return;
+    }
+
+    gPcMapShapeDataSize = 0;
+    gPcMapShapePayloadShift = 0;
+
+    arena_size = shape_arena_size();
+    if (out_size < PC_SHAPE_HEADER_SIZE || out_size > arena_size) {
         return;
     }
 
     memset(g_shape_dl_visited, 0, sizeof(g_shape_dl_visited));
+    memset(g_shape_mtx_visited, 0, sizeof(g_shape_mtx_visited));
 
     root = read_be32(dst + 0x00);
     vertex_table = read_be32(dst + 0x04);
@@ -327,7 +421,19 @@ static void try_convert_shape_file(u8 *dst, u32 out_size) {
         return;
     }
 
-    memset(dst, 0, 5u * sizeof(void *));
+    native_header_size = shape_native_header_size();
+    if (native_header_size < PC_SHAPE_HEADER_SIZE || native_header_size > arena_size
+            || out_size > arena_size - (native_header_size - PC_SHAPE_HEADER_SIZE)) {
+        return;
+    }
+
+    gPcMapShapePayloadShift = native_header_size - PC_SHAPE_HEADER_SIZE;
+    if (gPcMapShapePayloadShift != 0) {
+        memmove(dst + native_header_size, dst + PC_SHAPE_HEADER_SIZE, out_size - PC_SHAPE_HEADER_SIZE);
+    }
+    gPcMapShapeDataSize = out_size + gPcMapShapePayloadShift;
+
+    memset(dst, 0, native_header_size);
     ((void **)dst)[0] = convert_shape_node(dst, out_size, root);
     ((void **)dst)[1] = shape_ptr_to_host(dst, out_size, vertex_table);
     ((void **)dst)[2] = convert_shape_name_list(dst, out_size, model_names);
@@ -556,7 +662,6 @@ static void try_swap_title_data_file(u8 *dst, u32 out_size) {
 
 void decode_yay0(void *src_ptr, void *dst_ptr) {
     const u8 *src        = (const u8 *)src_ptr;
-    u8       *dst        = (u8 *)dst_ptr;
 
     u32       out_size   = read_be32(src + 0x04);
     u32       off_offset = read_be32(src + 0x08);
@@ -568,6 +673,13 @@ void decode_yay0(void *src_ptr, void *dst_ptr) {
         off_offset = read_native32(src + 0x08);
         uncomp_offset = read_native32(src + 0x0C);
     }
+
+    // PC needs a larger arena for Shape files target gMapShapeData in shared code
+    void *original_dst_ptr = dst_ptr;
+    if (dst_ptr == gMapShapeData) {
+        dst_ptr = gPcShapeArena;
+    }
+    u8 *dst = (u8 *)dst_ptr;
 
     const u8 *off_table  = src + off_offset;
     const u8 *uncomp     = src + uncomp_offset;
@@ -619,5 +731,11 @@ void decode_yay0(void *src_ptr, void *dst_ptr) {
     try_convert_shape_file((u8 *)dst_ptr, out_size);
     try_swap_hit_file((u8 *)dst_ptr, out_size);
     try_swap_title_data_file((u8 *)dst_ptr, out_size);
+
+    // Keep gMapShapeData.header pointing at the converted arena data.
+    if (dst_ptr == gPcShapeArena && original_dst_ptr == gMapShapeData && gPcMapShapeDataSize != 0) {
+        memcpy(original_dst_ptr, dst_ptr, shape_native_header_size());
+    }
+
     texture_cache_invalidate_all();
 }
