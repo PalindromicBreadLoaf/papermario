@@ -12,6 +12,7 @@ extern void (*SeqCmdHandlers[])(BGMPlayer*, BGMPlayerTrack*);
 extern u8 SeqCmdArgCounts[];
 
 static void au_bgm_stop_player(BGMPlayer* player);
+static void au_bgm_unpack_seq_args(u8 opcode, SeqArgs* args);
 
 static s32 au_bgm_bpm_to_tempo(BGMPlayer* player, u32 tempo);
 
@@ -699,6 +700,48 @@ s32 au_bgm_player_audio_frame_update(BGMPlayer* player) {
     return retVal;
 }
 
+static void au_bgm_unpack_seq_args(u8 opcode, SeqArgs* args) {
+#if defined(BUILD_PC) \
+    && (defined(_WIN32) || defined(__LITTLE_ENDIAN__) \
+        || (defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)))
+    u8 arg0 = args->raw[0];
+    u8 arg1 = args->raw[1];
+    u8 arg2 = args->raw[2];
+    u8 arg3 = args->raw[3];
+
+    switch (opcode) {
+        case 0xE0:
+        case 0xEF:
+            args->raw[0] = arg1;
+            args->raw[1] = arg0;
+            break;
+        case 0xE4:
+            args->raw[0] = arg1;
+            args->raw[1] = arg0;
+            args->raw[2] = arg3;
+            args->raw[3] = arg2;
+            break;
+        case 0xE5:
+        case 0xF6:
+        case 0xFC:
+        case 0xFE:
+            args->raw[0] = arg1;
+            args->raw[1] = arg0;
+            args->raw[2] = arg2;
+            break;
+        case 0xFD:
+            args->raw[0] = 0;
+            args->raw[1] = arg2;
+            args->raw[2] = arg1;
+            args->raw[3] = arg0;
+            break;
+    }
+#else
+    (void)opcode;
+    (void)args;
+#endif
+}
+
 void au_bgm_player_initialize(BGMPlayer* player) {
     s32* buf;
     s32 cmd;
@@ -1380,6 +1423,7 @@ void au_bgm_player_update_playing(BGMPlayer *player) {
                                 POST_BGM_READ();
                             }
                             bgm_args_done:
+                            au_bgm_unpack_seq_args(opcode, &player->seqCmdArgs);
                             CurrentSeqCmdHandler = SeqCmdHandlers[opcode - 0xE0];
                             CurrentSeqCmdHandler(player, track);
                         }
