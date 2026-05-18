@@ -8,6 +8,10 @@
 #define INCLUDE_ASM(TYPE, FOLDER, NAME, ARGS...)
 #define INCLUDE_ASM_SHIFT(TYPE, FOLDER, NAME, ARGS...)
 
+#if !defined(__ASSEMBLER__)
+#include <stdint.h>
+#endif
+
 #if !defined(__cplusplus) && !defined(__ASSEMBLER__)
 #ifdef s32
 #define PC_RESTORE_WIDE_S32
@@ -28,6 +32,12 @@
 #endif
 #ifdef PC_GAME_SOURCE
 #include "common.h"
+
+#undef PHYSICAL_TO_VIRTUAL
+#undef VIRTUAL_TO_PHYSICAL
+#define PHYSICAL_TO_VIRTUAL(addr) ((void *)(uintptr_t)(addr))
+#define VIRTUAL_TO_PHYSICAL(addr) ((uintptr_t)(addr))
+
 static inline WindowStyle pc_window_style_from_union(WindowStyle style) {
     return style;
 }

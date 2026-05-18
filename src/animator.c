@@ -923,8 +923,19 @@ void appendGfx_animator_node(ModelAnimator* animator, AnimatorNode* node, Matrix
             dlIdx = 0;
 
             do {
+#ifdef BUILD_PC
+                // PC Gfx commands are wider because command words can hold host pointers.
+                // dlIdx still counts 32-bit words for the code below.
+                {
+                    Gfx* _gfx = &node->displayList[dlIdx / 2];
+                    w0 = (s32)_gfx->words.w0;
+                    w1 = (s32)_gfx->words.w1;
+                    dlIdx += 2;
+                }
+#else
                 w0 = ((s32*)node->displayList)[dlIdx++];
                 w1 = ((s32*)node->displayList)[dlIdx++];
+#endif
                 cmd = w0 >> 0x18;
                 if (cmd == G_ENDDL) {
                     break;

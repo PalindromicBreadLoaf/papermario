@@ -1,6 +1,8 @@
 #ifndef _ABI_H_
 #define	_ABI_H_
 
+#include <stdint.h>
+
 /**************************************************************************
  *									  *
  *		 Copyright (C) 1994, Silicon Graphics, Inc.		  *
@@ -208,11 +210,12 @@ typedef struct {
 
 /*
  * Generic Acmd Packet
+ * PC builds store host audio pointers in command words.
  */
 
 typedef struct {
-	unsigned int w0;
-	unsigned int w1;
+	uintptr_t w0;
+	uintptr_t w1;
 } Awords;
 
 typedef union {
@@ -405,6 +408,5 @@ typedef short ENVMIX_STATE[40];
 #endif /* _LANGUAGE_C */
 
 #endif /* !_ABI_H_ */
-
 
 

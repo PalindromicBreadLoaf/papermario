@@ -21,6 +21,7 @@
 #define	_GBI_H_
 
 #include <PR/ultratypes.h>
+#include <stdint.h>
 
 /*
  * To use the F3DEX ucodes, define F3DEX_GBI before include this file.
@@ -1665,10 +1666,13 @@ typedef struct {
 
 /*
  * Generic Gfx Packet
+ *
+ * PC builds store host display-list pointers in command words. On N64,
+ * uintptr_t is still 32 bits.
  */
 typedef struct {
-	unsigned int w0;
-	unsigned int w1;
+	uintptr_t w0;
+	uintptr_t w1;
 } Gwords;
 
 /*
