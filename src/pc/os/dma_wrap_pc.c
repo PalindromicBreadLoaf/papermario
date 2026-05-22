@@ -1,5 +1,6 @@
 #include "common.h"
 #include "asset_loader.h"
+#include "pc_address.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -8,6 +9,8 @@ extern TextureHeader gCurrentTextureHeader;
 
 #define PC_US_ASSET_TABLE_FIRST_ENTRY 0x01E40020u
 #define PC_ASSET_HEADER_SIZE 0x1Cu
+#define PC_US_SPRITE_SHADING_ROM_START 0x00315B80u
+#define PC_US_SPRITE_SHADING_DATA_ROM_START 0x00315D50u
 
 u32 __real_dma_copy(Addr romStart, Addr romEnd, void* vramDest);
 s32 __real_dma_write(Addr romStart, Addr romEnd, void* vramDest);
@@ -43,6 +46,18 @@ static void pc_swap_asset_headers(u32 romStart, void* data, u32 length) {
         pc_write_native32(header + off + 0x10, pc_bswap32(pc_read_native32(header + off + 0x10)));
         pc_write_native32(header + off + 0x14, pc_bswap32(pc_read_native32(header + off + 0x14)));
         pc_write_native32(header + off + 0x18, pc_bswap32(pc_read_native32(header + off + 0x18)));
+    }
+}
+
+static void pc_swap_sprite_shading_offsets(u32 romStart, void* data, u32 length) {
+    u8* bytes = data;
+
+    if (romStart < PC_US_SPRITE_SHADING_ROM_START || romStart >= PC_US_SPRITE_SHADING_DATA_ROM_START) {
+        return;
+    }
+
+    for (u32 off = 0; off + sizeof(u32) <= length; off += sizeof(u32)) {
+        pc_write_native32(bytes + off, pc_bswap32(pc_read_native32(bytes + off)));
     }
 }
 
@@ -104,9 +119,8 @@ static void pc_swap_texture_header(void* dest, void* data, u32 length) {
 u32 __wrap_dma_copy(Addr romStart, Addr romEnd, void* vramDest) {
     u32 length = (u8*)romEnd - (u8*)romStart;
     u32 romOffset = (u32)(uintptr_t)(u8*)romStart;
-    uintptr_t dest = (uintptr_t)vramDest;
 
-    if (length == 0 || (dest >= 0x80000000UL && dest < 0xC0000000UL)) {
+    if (length == 0 || pc_addr_is_n64_kseg(vramDest)) {
         return length;
     }
 
@@ -114,6 +128,7 @@ u32 __wrap_dma_copy(Addr romStart, Addr romEnd, void* vramDest) {
 
     asset_loader_dma_read(romOffset, destPtr, length);
     pc_swap_asset_headers(romOffset, destPtr, length);
+    pc_swap_sprite_shading_offsets(romOffset, destPtr, length);
     pc_swap_texture_header(destPtr, destPtr, length);
     texture_cache_invalidate_all();
     return length;

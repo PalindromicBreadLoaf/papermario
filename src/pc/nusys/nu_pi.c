@@ -4,8 +4,10 @@
 #include <PR/os_thread.h>
 #include <PR/os_pi.h>
 #include "asset_loader.h"
+#include "pc_address.h"
 
 OSPiHandle *nuPiCartHandle = NULL;
+void* pc_tlb_translate(void* vaddr);
 
 #define PC_US_AUDIO_ROM_START 0x00F00000u
 #define PC_US_SPRITE_ROM_START 0x01943010u
@@ -544,6 +546,8 @@ void nuPiInit(void) {
 }
 
 void nuPiReadRom(u32 rom_addr, void *buf_ptr, u32 size) {
+    void* dest;
+
     if (buf_ptr == NULL || size == 0) {
         return;
     }
@@ -562,10 +566,15 @@ void nuPiReadRom(u32 rom_addr, void *buf_ptr, u32 size) {
         size -= skip;
     }
 
-    asset_loader_dma_read(rom_addr, buf_ptr, size);
-    pc_swap_audio_metadata(rom_addr, buf_ptr, size);
-    pc_swap_sprite_metadata(rom_addr, buf_ptr, size);
-    pc_swap_yay0_header(buf_ptr, size);
+    dest = pc_tlb_translate(buf_ptr);
+    if (pc_addr_is_n64_kseg(dest)) {
+        return;
+    }
+
+    asset_loader_dma_read(rom_addr, dest, size);
+    pc_swap_audio_metadata(rom_addr, dest, size);
+    pc_swap_sprite_metadata(rom_addr, dest, size);
+    pc_swap_yay0_header(dest, size);
 }
 
 void nuPiReadRomOverlay(void *segment) {

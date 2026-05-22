@@ -38,7 +38,6 @@ void asset_loader_init(const char *rom_path) {
     }
 
     fclose(fp);
-    fprintf(stdout, "asset_loader: loaded ROM '%s' (%u bytes)\n", rom_path, sRomSize);
 }
 
 void asset_loader_dma_read(u32 rom_offset, void *dest, u32 size) {
@@ -49,6 +48,9 @@ void asset_loader_dma_read(u32 rom_offset, void *dest, u32 size) {
     if (rom_offset >= sRomSize || size > sRomSize - rom_offset) {
         fprintf(stderr, "asset_loader: out-of-bounds DMA read (offset=0x%08X size=%u rom_size=%u)\n",
                 rom_offset, size, sRomSize);
+        if (dest != NULL && size != 0) {
+            memset(dest, 0, size);
+        }
         return;
     }
     memcpy(dest, sRomBuffer + rom_offset, size);

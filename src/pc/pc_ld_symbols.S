@@ -45529,6 +45529,9 @@
 .set sprite_shading_profiles_ROM_START, 0x00315b80
 .globl sprite_shading_profiles_ROM_START
 
+.set sprite_shading_profiles_data_ROM_START, 0x00315d50
+.globl sprite_shading_profiles_data_ROM_START
+
 .set sprite_shading_profiles_VRAM, 0x000ca390
 .globl sprite_shading_profiles_VRAM
 
@@ -52050,4 +52053,3 @@
 
 .set world_use_item_bss_VRAM, 0x802c0900
 .globl world_use_item_bss_VRAM
-

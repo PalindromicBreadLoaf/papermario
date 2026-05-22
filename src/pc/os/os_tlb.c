@@ -1,5 +1,6 @@
 #include <PR/os_tlb.h>
 #include <PR/osint.h>
+#include "pc_address.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -37,7 +38,7 @@ static uintptr_t pc_recover_tlb_host(u32 phys) {
 }
 
 void* pc_tlb_translate(void* vaddr) {
-    uintptr_t addr = (uintptr_t)vaddr;
+    uintptr_t addr = pc_normalize_guest_addr((uintptr_t)vaddr);
     s32 i;
 
     for (i = 0; i < PC_TLB_ENTRY_COUNT; i++) {
@@ -47,7 +48,7 @@ void* pc_tlb_translate(void* vaddr) {
             return (void*)(entry->host + (addr - entry->vaddr));
         }
     }
-    return vaddr;
+    return (void*)addr;
 }
 
 void osMapTLB(s32 tlbIndex, OSPageMask pageSize, void *vaddr, u32 even, u32 odd, s32 asid) {
@@ -62,7 +63,7 @@ void osMapTLB(s32 tlbIndex, OSPageMask pageSize, void *vaddr, u32 even, u32 odd,
     }
 
     entry = &sPcTlbEntries[tlbIndex];
-    entry->vaddr = (uintptr_t)vaddr;
+    entry->vaddr = pc_normalize_guest_addr((uintptr_t)vaddr);
     entry->host = pc_recover_tlb_host(even);
     entry->size = PC_TLB_PAGE_SIZE;
     entry->valid = true;
@@ -87,9 +88,10 @@ void osUnmapTLBAll(void) {
 void osSetTLBASID(s32 asid) { (void)asid; }
 
 u32 __osProbeTLB(void *vaddr) {
+    uintptr_t addr = pc_normalize_guest_addr((uintptr_t)vaddr);
     void* translated = pc_tlb_translate(vaddr);
 
-    if (translated == vaddr) {
+    if ((uintptr_t)translated == addr) {
         return (u32)-1;
     }
     return (u32)(uintptr_t)translated;
