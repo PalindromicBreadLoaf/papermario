@@ -162,6 +162,7 @@ set(PC_WIDE_CONSTANT_INIT_SRC
     ${CMAKE_SOURCE_DIR}/src/battle/move/item/pebble.c
     ${CMAKE_SOURCE_DIR}/src/battle/move/item/sleepy_sheep.c
     ${CMAKE_SOURCE_DIR}/src/battle_ui_gfx.c
+    ${CMAKE_SOURCE_DIR}/src/entity.c
     ${CMAKE_SOURCE_DIR}/src/entity/Block.c
     ${CMAKE_SOURCE_DIR}/src/entity/BlueWarpPipe.c
     ${CMAKE_SOURCE_DIR}/src/entity/Chest.c
@@ -189,6 +190,7 @@ set(PC_WIDE_CONSTANT_INIT_SRC
     ${CMAKE_SOURCE_DIR}/src/filemenu/filemenu_msg.c
     ${CMAKE_SOURCE_DIR}/src/global_hud_scripts.c
     ${CMAKE_SOURCE_DIR}/src/hud_element.c
+    ${CMAKE_SOURCE_DIR}/src/item_entity.c
     ${CMAKE_SOURCE_DIR}/src/level_up.c
     ${CMAKE_SOURCE_DIR}/src/starpoint.c
     ${CMAKE_SOURCE_DIR}/src/starpoint_en.c
@@ -197,7 +199,6 @@ set(PC_WIDE_CONSTANT_INIT_SRC
     ${CMAKE_SOURCE_DIR}/src/world/area_kpa/kpa_82/npc.c
     ${CMAKE_SOURCE_DIR}/src/world/area_kmr/kmr_22/npc.c
     ${CMAKE_SOURCE_DIR}/src/world/area_kzn/kzn_19/npc.c
-    ${CMAKE_SOURCE_DIR}/src/battle/partner_dma.c
 )
 set_source_files_properties(${PC_WIDE_CONSTANT_INIT_SRC} PROPERTIES
     COMPILE_DEFINITIONS "s32=intptr_t;u32=uintptr_t;PC_GAME_SOURCE"

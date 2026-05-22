@@ -107,6 +107,7 @@ void state_step_intro(void) {
 
         if (D_800A0964 == 1 && (gGameStatusPtr->startupState == INTRO_INIT ||
                                 gGameStatusPtr->startupState == INTRO_DISABLE_DRAW_FRAME ||
+                                gGameStatusPtr->startupState == INTRO_AWAIT_MAIN ||
                                 gGameStatusPtr->startupState == INTRO_FADE_IN))
         {
             gGameStatusPtr->introPart = INTRO_PART_100;

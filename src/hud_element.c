@@ -5,6 +5,26 @@
 
 #define MAX_HUD_CACHE_ENTRIES 192
 
+#ifdef BUILD_PC
+#include <stdint.h>
+
+static inline s32 hud_element_pc_s32_arg(s32 value) {
+    return (s32)(int32_t)(uintptr_t)value;
+}
+
+static inline uint32_t hud_element_pc_u32_arg(s32 value) {
+    return (uint32_t)(uintptr_t)value;
+}
+
+static inline void hud_element_pc_store_s32(s32* dest, s32 value) {
+    *(int32_t*)(void*)dest = (int32_t)value;
+}
+#else
+#define hud_element_pc_s32_arg(value) (value)
+#define hud_element_pc_u32_arg(value) (value)
+#define hud_element_pc_store_s32(dest, value) (*(dest) = (value))
+#endif
+
 typedef struct HudElementSize {
     s16 width;
     s16 height;
@@ -1756,7 +1776,13 @@ void render_transformed_hud_elements(void) {
 }
 
 void immediately_render_complex_hud_element(s32 elemID, s32 arg1, s32 camID) {
-    Camera* camera = &gCameras[camID];
+    Camera* camera;
+
+    elemID = hud_element_pc_s32_arg(elemID);
+    arg1 = hud_element_pc_s32_arg(arg1);
+    camID = hud_element_pc_s32_arg(camID);
+
+    camera = &gCameras[camID];
 
     if (arg1 > 0) {
         if (camera->flags == 0 || (camera->flags & CAMERA_FLAG_DISABLED)) {
@@ -1857,11 +1883,13 @@ void hud_element_draw_complex_battle_next(s32 id) {
 }
 
 void draw_hud_element_internal(s32 id, s32 clipMode) {
-    HudElement* elem = (*gHudElements)[id & ~HUD_ELEMENT_BATTLE_ID_MASK];
+    HudElement* elem = (*gHudElements)[hud_element_pc_s32_arg(id) & ~HUD_ELEMENT_BATTLE_ID_MASK];
     s32 texSizeX, texSizeY;
     s32 drawSizeX, drawSizeY;
     s32 offsetX, offsetY;
     s32 preset;
+
+    clipMode = hud_element_pc_s32_arg(clipMode);
 
     if (elem->flags && !(elem->flags & HUD_ELEMENT_FLAG_DISABLED)) {
         if (!(elem->flags & (HUD_ELEMENT_FLAG_INVISIBLE | HUD_ELEMENT_FLAG_HIDDEN)) && (elem->drawSizePreset >= 0)) {
@@ -1971,7 +1999,7 @@ void hud_element_draw_without_clipping(s32 id) {
 }
 
 void hud_element_set_script(s32 id, HudScript* anim) {
-    HudElement* hudElement = (*gHudElements)[id & ~HUD_ELEMENT_BATTLE_ID_MASK];
+    HudElement* hudElement = (*gHudElements)[hud_element_pc_s32_arg(id) & ~HUD_ELEMENT_BATTLE_ID_MASK];
 
     if (anim == nullptr) {
         anim = &HES_Empty;
@@ -1996,14 +2024,16 @@ void hud_element_set_script(s32 id, HudScript* anim) {
 }
 
 HudScript* hud_element_get_script(s32 id) {
-    return (*gHudElements)[id & ~HUD_ELEMENT_BATTLE_ID_MASK]->anim;
+    return (*gHudElements)[hud_element_pc_s32_arg(id) & ~HUD_ELEMENT_BATTLE_ID_MASK]->anim;
 }
 
 HudElement* get_hud_element(s32 id) {
-    return (*gHudElements)[id & ~HUD_ELEMENT_BATTLE_ID_MASK];
+    return (*gHudElements)[hud_element_pc_s32_arg(id) & ~HUD_ELEMENT_BATTLE_ID_MASK];
 }
 
 void hud_element_free(s32 id) {
+    id = hud_element_pc_s32_arg(id);
+
     if ((*gHudElements)[id & ~HUD_ELEMENT_BATTLE_ID_MASK]->flags & HUD_ELEMENT_FLAG_TRANSFORM) {
         hud_element_free_transform(id & ~HUD_ELEMENT_BATTLE_ID_MASK);
     }
@@ -2014,29 +2044,35 @@ void hud_element_free(s32 id) {
 }
 
 void hud_element_set_render_pos(s32 id, s32 x, s32 y) {
-    HudElement* hudElement = (*gHudElements)[id & ~HUD_ELEMENT_BATTLE_ID_MASK];
+    HudElement* hudElement = (*gHudElements)[hud_element_pc_s32_arg(id) & ~HUD_ELEMENT_BATTLE_ID_MASK];
+
+    x = hud_element_pc_s32_arg(x);
+    y = hud_element_pc_s32_arg(y);
 
     hudElement->renderPosX = x;
     hudElement->renderPosY = y;
 }
 
 void hud_element_get_render_pos(s32 id, s32* x, s32* y) {
-    HudElement* hudElement = (*gHudElements)[id & ~HUD_ELEMENT_BATTLE_ID_MASK];
+    HudElement* hudElement = (*gHudElements)[hud_element_pc_s32_arg(id) & ~HUD_ELEMENT_BATTLE_ID_MASK];
 
-    *x = hudElement->renderPosX;
-    *y = hudElement->renderPosY;
+    hud_element_pc_store_s32(x, hudElement->renderPosX);
+    hud_element_pc_store_s32(y, hudElement->renderPosY);
 }
 
 void hud_element_set_render_depth(s32 id, s32 z) {
-    (*gHudElements)[id & ~HUD_ELEMENT_BATTLE_ID_MASK]->worldPosOffset.z = z;
+    (*gHudElements)[hud_element_pc_s32_arg(id) & ~HUD_ELEMENT_BATTLE_ID_MASK]->worldPosOffset.z =
+        hud_element_pc_s32_arg(z);
 }
 
 void hud_element_set_flags(s32 id, s32 flags) {
-    (*gHudElements)[id & ~HUD_ELEMENT_BATTLE_ID_MASK]->flags |= flags;
+    (*gHudElements)[hud_element_pc_s32_arg(id) & ~HUD_ELEMENT_BATTLE_ID_MASK]->flags |=
+        hud_element_pc_u32_arg(flags);
 }
 
 void hud_element_clear_flags(s32 id, s32 flags) {
-    (*gHudElements)[id & ~HUD_ELEMENT_BATTLE_ID_MASK]->flags &= ~flags;
+    (*gHudElements)[hud_element_pc_s32_arg(id) & ~HUD_ELEMENT_BATTLE_ID_MASK]->flags &=
+        ~hud_element_pc_u32_arg(flags);
 }
 
 void ALT_clear_hud_element_cache(void) {
@@ -2080,7 +2116,7 @@ void ALT_clear_hud_element_cache(void) {
 }
 
 void hud_element_set_scale(s32 index, f32 scale) {
-    HudElement* elem = (*gHudElements)[index & ~HUD_ELEMENT_BATTLE_ID_MASK];
+    HudElement* elem = (*gHudElements)[hud_element_pc_s32_arg(index) & ~HUD_ELEMENT_BATTLE_ID_MASK];
     s32 drawSizeX;
     s32 drawSizeY;
     s32 imgSizeX;
@@ -2115,7 +2151,7 @@ void hud_element_set_scale(s32 index, f32 scale) {
 }
 
 void hud_element_use_preset_size(s32 id, s8 sizePreset) {
-    HudElement* hudElement = (*gHudElements)[id & ~HUD_ELEMENT_BATTLE_ID_MASK];
+    HudElement* hudElement = (*gHudElements)[hud_element_pc_s32_arg(id) & ~HUD_ELEMENT_BATTLE_ID_MASK];
 
     hudElement->widthScale = X10(1.0f);
     hudElement->heightScale = X10(1.0f);
@@ -2127,18 +2163,22 @@ void hud_element_use_preset_size(s32 id, s8 sizePreset) {
 }
 
 s32 hud_element_get_variable(s32 id) {
-    return ((*gHudElements)[id & ~HUD_ELEMENT_BATTLE_ID_MASK]->flags >> 24) & 0xF;
+    return ((*gHudElements)[hud_element_pc_s32_arg(id) & ~HUD_ELEMENT_BATTLE_ID_MASK]->flags >> 24) & 0xF;
 }
 
 void hud_element_set_variable(s32 id, s32 arg1) {
-    HudElement* hudElement = (*gHudElements)[id & ~HUD_ELEMENT_BATTLE_ID_MASK];
+    HudElement* hudElement = (*gHudElements)[hud_element_pc_s32_arg(id) & ~HUD_ELEMENT_BATTLE_ID_MASK];
+
+    arg1 = hud_element_pc_s32_arg(arg1);
 
     hudElement->flags &= ~HUD_ELEMENT_VARIABLE_MASK;
     hudElement->flags |= arg1 << 24;
 }
 
 void hud_element_set_alpha(s32 id, s32 opacity) {
-    HudElement* hudElement = (*gHudElements)[id & ~HUD_ELEMENT_BATTLE_ID_MASK];
+    HudElement* hudElement = (*gHudElements)[hud_element_pc_s32_arg(id) & ~HUD_ELEMENT_BATTLE_ID_MASK];
+
+    opacity = hud_element_pc_s32_arg(opacity);
 
     hudElement->flags |= HUD_ELEMENT_FLAG_TRANSPARENT;
     hudElement->opacity = opacity;
@@ -2149,7 +2189,11 @@ void hud_element_set_alpha(s32 id, s32 opacity) {
 }
 
 void hud_element_set_tint(s32 id, s32 r, s32 g, s32 b) {
-    HudElement* hudElement = (*gHudElements)[id & ~HUD_ELEMENT_BATTLE_ID_MASK];
+    HudElement* hudElement = (*gHudElements)[hud_element_pc_s32_arg(id) & ~HUD_ELEMENT_BATTLE_ID_MASK];
+
+    r = hud_element_pc_s32_arg(r);
+    g = hud_element_pc_s32_arg(g);
+    b = hud_element_pc_s32_arg(b);
 
     hudElement->tint.r = r;
     hudElement->tint.g = g;
@@ -2157,7 +2201,7 @@ void hud_element_set_tint(s32 id, s32 r, s32 g, s32 b) {
 }
 
 void hud_element_create_transform_A(s32 id) {
-    HudElement* element = (*gHudElements)[id & ~HUD_ELEMENT_BATTLE_ID_MASK];
+    HudElement* element = (*gHudElements)[hud_element_pc_s32_arg(id) & ~HUD_ELEMENT_BATTLE_ID_MASK];
     HudTransform* transform = general_heap_malloc(sizeof(*transform));
 
     element->hudTransform = transform;
@@ -2179,7 +2223,7 @@ void hud_element_create_transform_A(s32 id) {
 }
 
 void hud_element_create_transform_B(s32 id) {
-    HudElement* element = (*gHudElements)[id & ~HUD_ELEMENT_BATTLE_ID_MASK];
+    HudElement* element = (*gHudElements)[hud_element_pc_s32_arg(id) & ~HUD_ELEMENT_BATTLE_ID_MASK];
     HudTransform* transform = general_heap_malloc(sizeof(*transform));
 
     element->hudTransform = transform;
@@ -2199,7 +2243,7 @@ void hud_element_create_transform_B(s32 id) {
 }
 
 void hud_element_create_transform_C(s32 id) {
-    HudElement* element = (*gHudElements)[id & ~HUD_ELEMENT_BATTLE_ID_MASK];
+    HudElement* element = (*gHudElements)[hud_element_pc_s32_arg(id) & ~HUD_ELEMENT_BATTLE_ID_MASK];
     HudTransform* transform = general_heap_malloc(sizeof(*transform));
 
     element->hudTransform = transform;
@@ -2219,7 +2263,7 @@ void hud_element_create_transform_C(s32 id) {
 }
 
 void hud_element_free_transform(s32 id) {
-    HudElement* hudElement = (*gHudElements)[id & ~HUD_ELEMENT_BATTLE_ID_MASK];
+    HudElement* hudElement = (*gHudElements)[hud_element_pc_s32_arg(id) & ~HUD_ELEMENT_BATTLE_ID_MASK];
     HudTransform* hudTransform = hudElement->hudTransform;
 
     if (!(hudElement->flags & HUD_ELEMENT_FLAG_NO_FOLD)) {
@@ -2232,7 +2276,7 @@ void hud_element_free_transform(s32 id) {
 }
 
 void hud_element_set_transform_pos(s32 id, f32 x, f32 y, f32 z) {
-    HudElement* element = (*gHudElements)[id & ~HUD_ELEMENT_BATTLE_ID_MASK];
+    HudElement* element = (*gHudElements)[hud_element_pc_s32_arg(id) & ~HUD_ELEMENT_BATTLE_ID_MASK];
     HudTransform* transform = element->hudTransform;
 
     if (element->flags & HUD_ELEMENT_FLAG_TRANSFORM) {
@@ -2243,7 +2287,7 @@ void hud_element_set_transform_pos(s32 id, f32 x, f32 y, f32 z) {
 }
 
 void hud_element_set_transform_scale(s32 id, f32 x, f32 y, f32 z) {
-    HudElement* element = (*gHudElements)[id & ~HUD_ELEMENT_BATTLE_ID_MASK];
+    HudElement* element = (*gHudElements)[hud_element_pc_s32_arg(id) & ~HUD_ELEMENT_BATTLE_ID_MASK];
     HudTransform* transform = element->hudTransform;
 
     if (element->flags & HUD_ELEMENT_FLAG_TRANSFORM) {
@@ -2254,7 +2298,7 @@ void hud_element_set_transform_scale(s32 id, f32 x, f32 y, f32 z) {
 }
 
 void hud_element_set_transform_rotation(s32 id, f32 x, f32 y, f32 z) {
-    HudElement* element = (*gHudElements)[id & ~HUD_ELEMENT_BATTLE_ID_MASK];
+    HudElement* element = (*gHudElements)[hud_element_pc_s32_arg(id) & ~HUD_ELEMENT_BATTLE_ID_MASK];
     HudTransform* transform = element->hudTransform;
 
     if (element->flags & HUD_ELEMENT_FLAG_TRANSFORM) {
@@ -2265,8 +2309,11 @@ void hud_element_set_transform_rotation(s32 id, f32 x, f32 y, f32 z) {
 }
 
 void hud_element_set_transform_rotation_pivot(s32 id, s32 dx, s32 dy) {
-    HudElement* element = (*gHudElements)[id & ~HUD_ELEMENT_BATTLE_ID_MASK];
+    HudElement* element = (*gHudElements)[hud_element_pc_s32_arg(id) & ~HUD_ELEMENT_BATTLE_ID_MASK];
     HudTransform* transform = element->hudTransform;
+
+    dx = hud_element_pc_s32_arg(dx);
+    dy = hud_element_pc_s32_arg(dy);
 
     if (element->flags & HUD_ELEMENT_FLAG_TRANSFORM) {
         transform->pivot.x = dx;
@@ -2275,10 +2322,15 @@ void hud_element_set_transform_rotation_pivot(s32 id, s32 dx, s32 dy) {
 }
 
 void copy_world_hud_element_ref_to_battle(s32 worldID, s32 battleID) {
+    worldID = hud_element_pc_s32_arg(worldID);
+    battleID = hud_element_pc_s32_arg(battleID);
+
     gHudElementsBattle[battleID & ~HUD_ELEMENT_BATTLE_ID_MASK] = gHudElementsWorld[worldID & ~HUD_ELEMENT_BATTLE_ID_MASK];
 }
 
 void hud_element_set_aux_cache(void* base, s32 size) {
+    size = hud_element_pc_s32_arg(size);
+
     HudElemAuxCache = (u8*)base;
     if (base == nullptr) {
         HudElemCacheCapacity = 0x11000;

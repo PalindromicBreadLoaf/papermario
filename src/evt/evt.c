@@ -1368,7 +1368,7 @@ ApiStatus func_802C73B8(Evt* script) {
 s32 evt_execute_next_command(Evt* script) {
     while (true) {
         s32 status = ApiStatus_DONE2;
-        s32* lines;
+        Bytecode* lines;
         s32 nargs;
 
         switch (script->curOpcode) {
@@ -2141,8 +2141,8 @@ Bytecode* evt_skip_else(Evt* script) {
 Bytecode* evt_goto_end_case(Evt* script) {
     s32 switchDepth = 1;
     Bytecode* pos = script->ptrNextLine;
-    s32* opcode;
-    s32* nargs;
+    Bytecode* opcode;
+    Bytecode* nargs;
 
     do {
         opcode = pos++;
@@ -2169,8 +2169,8 @@ Bytecode* evt_goto_end_case(Evt* script) {
 Bytecode* evt_goto_next_case(Evt* script) {
     s32 switchDepth = 1;
     Bytecode* pos = script->ptrNextLine;
-    s32* opcode;
-    s32* nargs;
+    Bytecode* opcode;
+    Bytecode* nargs;
 
     do {
         opcode = pos++;

@@ -435,14 +435,22 @@ typedef struct Evt {
     /* 0x070 */ union {
     /*       */     s32 functionTemp[4];
     /*       */     f32 functionTempF[4];
+#ifdef BUILD_PC
+    /*       */     u32 functionTempPtr[4]; /* PC: 32-bit alias slots */
+#else
     /*       */     void* functionTempPtr[4];
+#endif
     /*       */     bool functionTempBool[4];
     /*       */ };
     /* 0x080 */ ApiFunc callFunction;
     /* 0x084 */ union {
     /*       */     s32 varTable[16];
     /*       */     f32 varTableF[16];
+#ifdef BUILD_PC
+    /*       */     u32 varTablePtr[16]; /* PC: 32-bit alias slots */
+#else
     /*       */     void* varTablePtr[16];
+#endif
     /*       */ };
     /* 0x0C4 */ s32 varFlags[3];
     /* 0x0D0 */ s32 loopStartTable[8];
@@ -1878,12 +1886,20 @@ typedef struct ActorState { // TODO: Make the first field of this an ActorMoveme
     /* 0x6C */ union {
     /*      */     s32 functionTemp[4];
     /*      */     f32 functionTempF[4];
+#ifdef BUILD_PC
+    /*      */     u32 functionTempPtr[4]; /* PC: 32-bit alias slots */
+#else
     /*      */     void* functionTempPtr[4];
+#endif
     /*      */ };
     /* 0x7C */ union {
     /*      */     s32 varTable[16];
     /*      */     f32 varTableF[16];
+#ifdef BUILD_PC
+    /*      */     u32 varTablePtr[16]; /* PC: 32-bit alias slots */
+#else
     /*      */     void* varTablePtr[16];
+#endif
     /*      */ };
 } ActorState; // size = 0xBC;
 

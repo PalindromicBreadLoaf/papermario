@@ -45,6 +45,8 @@ API_CALLABLE(func_80044290) {
 
 API_CALLABLE(MakeNpcs) {
     Bytecode* args = script->ptrReadPos;
+    s32 flags;
+    s32* npcGroupList;
 
     if (isInitialCall) {
         script->functionTemp[0] = 0;
@@ -52,7 +54,9 @@ API_CALLABLE(MakeNpcs) {
 
     switch (script->functionTemp[0]) {
         case 0:
-            make_npcs(evt_get_variable(script, *args++), gGameStatusPtr->mapID, (s32*) evt_get_variable(script, *args++));
+            flags = evt_get_variable(script, *args++);
+            npcGroupList = (s32*)evt_get_variable(script, *args++);
+            make_npcs(flags, gGameStatusPtr->mapID, npcGroupList);
             script->functionTemp[0] = 1;
             break;
         case 1:

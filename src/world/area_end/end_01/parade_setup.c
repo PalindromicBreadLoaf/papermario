@@ -73,13 +73,14 @@ API_CALLABLE(N(UpdateCameraScroll)) {
 
 API_CALLABLE(N(AddScrollToNpcPos)) {
     Bytecode* args = script->ptrReadPos;
-    Npc** npc = (Npc**)&script->functionTempPtr[1];
+    Npc* npc;
 
     if (isInitialCall) {
-        *npc = get_npc_unsafe(evt_get_variable(script, *args++));
+        script->functionTempPtr[1] = get_npc_unsafe(evt_get_variable(script, *args++));
     }
 
-    (*npc)->pos.x += PARADE_SCROLL_RATE / (f32) DT;
+    npc = (Npc*)script->functionTempPtr[1];
+    npc->pos.x += PARADE_SCROLL_RATE / (f32) DT;
 
     return ApiStatus_BLOCK;
 }
