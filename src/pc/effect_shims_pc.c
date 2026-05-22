@@ -1,6 +1,19 @@
 #include "common.h"
 #include "effects.h"
 
+extern EffectSharedData gEffectSharedData[15];
+
+static bool pc_effect_is_loaded(s32 effectID) {
+    for (s32 i = 0; i < ARRAY_COUNT(gEffectSharedData); i++) {
+        EffectSharedData* sharedData = &gEffectSharedData[i];
+
+        if ((sharedData->flags & FX_SHARED_DATA_LOADED) && sharedData->effectIndex == effectID) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void shim_guRotateF(float mf[4][4], float a, float x, float y, float z) { guRotateF(mf, a, x, y, z); }
 void shim_guTranslateF(float mf[4][4], float x, float y, float z) { guTranslateF(mf, x, y, z); }
 void shim_guTranslate(Mtx* m, float x, float y, float z) { guTranslate(m, x, y, z); }
@@ -8,7 +21,12 @@ void shim_guScaleF(float mf[4][4], float x, float y, float z) { guScaleF(mf, x, 
 void shim_guMtxCatF(float m[4][4], float n[4][4], float r[4][4]) { guMtxCatF(m, n, r); }
 void shim_guMtxF2L(float mf[4][4], Mtx* m) { guMtxF2L(mf, m); }
 RenderTask* shim_queue_render_task(RenderTask* task) { return queue_render_task(task); }
-EffectInstance* shim_create_effect_instance(EffectBlueprint* effectBp) { return create_effect_instance(effectBp); }
+EffectInstance* shim_create_effect_instance(EffectBlueprint* effectBp) {
+    if (!pc_effect_is_loaded(effectBp->effectID)) {
+        load_effect(effectBp->effectID);
+    }
+    return create_effect_instance(effectBp);
+}
 void shim_remove_effect(EffectInstance* effect) { remove_effect(effect); }
 void* shim_general_heap_malloc(s32 size) { return general_heap_malloc(size); }
 void shim_mem_clear(void* data, s32 numBytes) { mem_clear(data, numBytes); }

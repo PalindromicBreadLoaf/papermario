@@ -49,6 +49,22 @@ static void pc_signal_handler(int sig, siginfo_t *info, void *context) {
 
     fputc('\n', stderr);
     fflush(stderr);
+
+    // Dump maps for fault diagnosis.
+    {
+        FILE *m = fopen("/proc/self/maps", "r");
+        if (m) {
+            char line[256];
+            fputs("--- /proc/self/maps ---\n", stderr);
+            while (fgets(line, sizeof line, m)) {
+                fputs(line, stderr);
+            }
+            fclose(m);
+            fputs("--- end maps ---\n", stderr);
+            fflush(stderr);
+        }
+    }
+
     signal(sig, SIG_DFL);
     raise(sig);
 }

@@ -18,6 +18,15 @@ NUGfxFunc       nuGfxFunc          = NULL;
 NUGfxPreNMIFunc nuGfxPreNMIFunc    = NULL;
 OSThread        nuGfxThread;
 
+extern u16 gFrameBuf0[];
+extern u16 gFrameBuf1[];
+extern u16 gFrameBuf2[];
+
+static u16 *sFrameBuffers[] = {
+    gFrameBuf0, gFrameBuf1, gFrameBuf2
+};
+static u16 sZBuffer[320 * 240];
+
 // nuGfxMesgQ is used by the gfx thread; nuGfxTaskEndFunc is internal.
 OSMesgQueue     nuGfxMesgQ;
 static OSMesg   sGfxMesgBuf[NU_GFX_MESGS];
@@ -69,6 +78,17 @@ void nuGfxTaskStart(Gfx *gfxList, u32 gfxListSize, u32 ucode, u32 flag) {
 
     if (flag & NU_SC_SWAPBUFFER) {
         gl_backend_end_frame();
+        if (nuGfxCfb != NULL && nuGfxCfbNum != 0) {
+            NUScTask task = { 0 };
+
+            task.framebuffer = nuGfxCfb_ptr;
+            if (nuGfxSwapCfbFunc != NULL) {
+                nuGfxSwapCfbFunc(&task);
+            }
+
+            nuGfxCfbCounter = (nuGfxCfbCounter + 1) % nuGfxCfbNum;
+            nuGfxCfb_ptr = nuGfxCfb[nuGfxCfbCounter];
+        }
         s_frame_started = false;
     }
 
@@ -134,4 +154,6 @@ void nuGfxInitEX2(void) {
     nuGfxSwapCfbFuncSet(nuGfxSwapCfb);
     nuGfxTaskMgrInit();
     nuGfxThreadStart();
+    nuGfxSetCfb(sFrameBuffers, NU_GFX_FRAMEBUFFER_NUM);
+    nuGfxSetZBuffer(sZBuffer);
 }

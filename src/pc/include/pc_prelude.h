@@ -22,6 +22,9 @@
 #undef u32
 #endif
 #include "evt.h"
+#ifdef PC_GAME_SOURCE
+#include "common_structs.h"
+#endif
 #ifdef PC_RESTORE_WIDE_S32
 #define s32 intptr_t
 #undef PC_RESTORE_WIDE_S32
