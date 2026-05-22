@@ -3,18 +3,27 @@
 #include "entity.h"
 #include "model.h"
 #include "sprite/player.h"
+#include "animation_script.h"
 
-#ifdef SHIFT
+#if defined(SHIFT) || defined(BUILD_PC)
 extern Addr WorldEntityHeapBottom;
 extern Addr WorldEntityHeapBase;
 #define WORLD_ENTITY_HEAP_BOTTOM (s32) WorldEntityHeapBottom
 #define WORLD_ENTITY_HEAP_BASE (s32) WorldEntityHeapBase
+#endif
+
+#ifdef SHIFT
 #define entity_jan_iwa_VRAM (void*) entity_jan_iwa_VRAM
 #define entity_sbk_omo_VRAM (void*) entity_sbk_omo_VRAM
 #define entity_default_VRAM (void*) entity_default_VRAM
-#else
+#endif
+
+#if !defined(SHIFT) && !defined(BUILD_PC)
 #define WORLD_ENTITY_HEAP_BOTTOM 0x80250000
 #define WORLD_ENTITY_HEAP_BASE 0x80267FF0
+#endif
+
+#ifndef SHIFT
 #define entity_jan_iwa_VRAM (void*) 0x802BAE00
 #define entity_sbk_omo_VRAM (void*) 0x802BAE00
 #define entity_default_VRAM (void*) 0x802BAE00
@@ -522,11 +531,27 @@ void update_entity_inverse_rotation_matrix(Entity* entity) {
 }
 
 Entity* get_entity_by_index(s32 index) {
-    return (*gCurrentEntityListPtr)[index & 0xFFF];
+    s32 listIndex = index & 0xFFF;
+
+#ifdef BUILD_PC
+    if (listIndex >= MAX_ENTITIES || gCurrentEntityListPtr == nullptr) {
+        return nullptr;
+    }
+#endif
+
+    return (*gCurrentEntityListPtr)[listIndex];
 }
 
 Shadow* get_shadow_by_index(s32 index) {
-    return (*gCurrentShadowListPtr)[index & 0xFFF];
+    s32 listIndex = index & 0xFFF;
+
+#ifdef BUILD_PC
+    if (listIndex >= MAX_SHADOWS || gCurrentShadowListPtr == nullptr) {
+        return nullptr;
+    }
+#endif
+
+    return (*gCurrentShadowListPtr)[listIndex];
 }
 
 EntityList* get_entity_list(void) {
@@ -564,13 +589,28 @@ u32 get_entity_type(s32 index) {
 
     if (entity == nullptr) {
         return -1;
+#ifdef BUILD_PC
+    } else if (entity->blueprint == nullptr) {
+        return -1;
+#endif
     } else {
         return entity->blueprint->entityType;
     }
 }
 
+static void entity_free_pc_gfx(Entity* entity) {
+#ifdef BUILD_PC
+    if (entity->type == ENTITY_TYPE_HIDDEN_PANEL && entity->gfxBaseAddr != nullptr) {
+        heap_free(entity->gfxBaseAddr);
+        entity->gfxBaseAddr = nullptr;
+    }
+#endif
+}
+
 void delete_entity(s32 entityIndex) {
     Entity* entity = get_entity_by_index(entityIndex);
+
+    entity_free_pc_gfx(entity);
 
     if (entity->dataBuf.any != nullptr) {
         heap_free(entity->dataBuf.any);
@@ -594,6 +634,8 @@ void delete_entity(s32 entityIndex) {
 
 void delete_entity_and_unload_data(s32 entityIndex) {
     Entity* entity = get_entity_by_index(entityIndex);
+
+    entity_free_pc_gfx(entity);
 
     if (entity->dataBuf.any != nullptr) {
         heap_free(entity->dataBuf.any);
@@ -901,6 +943,34 @@ void reload_world_entity_data(void) {
 
 void entity_swizzle_anim_pointers(EntityBlueprint* entityData, void* baseAnim, void* baseGfx) {
     StaticAnimatorNode* node;
+#ifdef BUILD_PC
+    // PC animator data is already linked as host pointers. Use the node array
+    // directly and normalize ENTITY_ANIM_NULL sentinels.
+    StaticAnimatorNode** nodeArray = (StaticAnimatorNode**)entityData->modelAnimationNodes;
+    (void)baseAnim;
+    (void)baseGfx;
+
+    if (nodeArray == nullptr) {
+        return;
+    }
+
+    while (*nodeArray != nullptr && *nodeArray != (StaticAnimatorNode*)ENTITY_ANIM_NULL) {
+        node = *nodeArray++;
+
+        if (node->displayList == (Gfx*)ENTITY_ANIM_NULL) {
+            node->displayList = nullptr;
+        }
+        if (node->sibling == (StaticAnimatorNode*)ENTITY_ANIM_NULL) {
+            node->sibling = nullptr;
+        }
+        if (node->child == (StaticAnimatorNode*)ENTITY_ANIM_NULL) {
+            node->child = nullptr;
+        }
+        if (node->vtxList == (Vtx*)ENTITY_ANIM_NULL) {
+            node->vtxList = nullptr;
+        }
+    }
+#else
     s32* ptr = (s32*)((s32)baseAnim + (s32)entityData->modelAnimationNodes);
 
     while (true) {
@@ -935,6 +1005,7 @@ void entity_swizzle_anim_pointers(EntityBlueprint* entityData, void* baseAnim, v
             node->vtxList = nullptr;
         }
     }
+#endif
 }
 
 s32 is_entity_data_loaded(Entity* entity, EntityBlueprint* blueprint, s32* loadedStart, s32* loadedEnd) {
@@ -1127,7 +1198,12 @@ void load_split_entity_data(Entity* entity, EntityBlueprint* entityData, s32 lis
         return;
     }
     animationScript = entityData->renderCommandList;
+#ifdef BUILD_PC
+    // PC animator nodes are already host pointers.
+    animationNodes = (StaticAnimatorNode**)entityData->modelAnimationNodes;
+#else
     animationNodes = (StaticAnimatorNode**)((s32)animBaseAddr + (s32)entityData->modelAnimationNodes);
+#endif
     if (swizzlePointers) {
         entity_swizzle_anim_pointers(entityData, animBaseAddr, entity->gfxBaseAddr);
     }

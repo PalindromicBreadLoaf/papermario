@@ -1,6 +1,6 @@
 #include "common.h"
 
-#ifdef SHIFT
+#if defined(SHIFT) || defined(BUILD_PC)
 BSS u8 WorldEntityHeapBottom[WORLD_ENTITY_HEAP_SIZE];
 #endif
 BSS u8 WorldEntityHeapBase[0x10];

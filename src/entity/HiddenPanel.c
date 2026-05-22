@@ -12,15 +12,67 @@ extern s32 ERS_AltHiddenPanel[];
 
 extern Gfx Gfx_HiddenPanel_RenderTop[];
 extern Gfx Gfx_AltHiddenPanel_RenderTop[];
+extern Gfx Gfx_HiddenPanel_RenderBottom[];
 extern Gfx Gfx_HiddenPanel_RenderHole[];
 extern Gfx Gfx_HiddenPanel_Render[];
 extern Gfx Gfx_HiddenPanel_Render2[];
+
+#ifdef BUILD_PC
+extern Vtx Entity_HiddenPanel_vtxTopSide[];
+extern Vtx Entity_HiddenPanel_vtxBottomSide[];
+extern Vtx Entity_HiddenPanel_vtxBottomSideDark[];
+extern Vtx Entity_HiddenPanel_vtxTopSide2[];
+
+typedef struct HiddenPanelPcGfx {
+    Vtx topSide[4];
+    Vtx bottomSide[4];
+    Vtx bottomSideDark[4];
+    Vtx topSideAlt[4];
+    Gfx renderTop[6];
+    Gfx renderTopAlt[6];
+    Gfx renderBottom[10];
+    Gfx renderHole[10];
+    Gfx render[4];
+    Gfx renderAlt[4];
+} HiddenPanelPcGfx;
+
+static HiddenPanelPcGfx* entity_HiddenPanel_create_pc_gfx(void) {
+    HiddenPanelPcGfx* pcGfx = heap_malloc(sizeof(*pcGfx));
+
+    ASSERT(pcGfx != nullptr);
+
+    memcpy(pcGfx->topSide, Entity_HiddenPanel_vtxTopSide, sizeof(pcGfx->topSide));
+    memcpy(pcGfx->bottomSide, Entity_HiddenPanel_vtxBottomSide, sizeof(pcGfx->bottomSide));
+    memcpy(pcGfx->bottomSideDark, Entity_HiddenPanel_vtxBottomSideDark, sizeof(pcGfx->bottomSideDark));
+    memcpy(pcGfx->topSideAlt, Entity_HiddenPanel_vtxTopSide2, sizeof(pcGfx->topSideAlt));
+    memcpy(pcGfx->renderTop, Gfx_HiddenPanel_RenderTop, sizeof(pcGfx->renderTop));
+    memcpy(pcGfx->renderTopAlt, Gfx_AltHiddenPanel_RenderTop, sizeof(pcGfx->renderTopAlt));
+    memcpy(pcGfx->renderBottom, Gfx_HiddenPanel_RenderBottom, sizeof(pcGfx->renderBottom));
+    memcpy(pcGfx->renderHole, Gfx_HiddenPanel_RenderHole, sizeof(pcGfx->renderHole));
+    memcpy(pcGfx->render, Gfx_HiddenPanel_Render, sizeof(pcGfx->render));
+    memcpy(pcGfx->renderAlt, Gfx_HiddenPanel_Render2, sizeof(pcGfx->renderAlt));
+
+    pcGfx->renderTop[3].words.w1 = (uintptr_t)pcGfx->topSide;
+    pcGfx->renderTopAlt[3].words.w1 = (uintptr_t)pcGfx->topSideAlt;
+    pcGfx->renderBottom[7].words.w1 = (uintptr_t)pcGfx->bottomSide;
+    pcGfx->renderHole[7].words.w1 = (uintptr_t)pcGfx->bottomSideDark;
+    pcGfx->render[1].words.w1 = (uintptr_t)pcGfx->renderTop;
+    pcGfx->render[2].words.w1 = (uintptr_t)pcGfx->renderBottom;
+    pcGfx->renderAlt[1].words.w1 = (uintptr_t)pcGfx->renderTopAlt;
+    pcGfx->renderAlt[2].words.w1 = (uintptr_t)pcGfx->renderBottom;
+
+    return pcGfx;
+}
+#endif
 
 void entity_HiddenPanel_setupGfx(s32 entityIndex) {
     Entity* entity = get_entity_by_index(entityIndex);
     HiddenPanelData* data = entity->dataBuf.hiddenPanel;
     Matrix4f rotMtx;
     Matrix4f tempMtx;
+#ifdef BUILD_PC
+    HiddenPanelPcGfx* pcGfx = entity->gfxBaseAddr;
+#endif
 
     if (entity->pos.y != data->initialY) {
         guMtxIdentF(rotMtx);
@@ -28,10 +80,18 @@ void entity_HiddenPanel_setupGfx(s32 entityIndex) {
         guMtxCatF(tempMtx, rotMtx, tempMtx);
         guMtxF2L(tempMtx, &gDisplayContext->matrixStack[gMatrixListPos]);
         gSPMatrix(gMainGfxPos++, &gDisplayContext->matrixStack[gMatrixListPos++], G_MTX_PUSH | G_MTX_LOAD | G_MTX_MODELVIEW);
+#ifdef BUILD_PC
+        gSPDisplayList(gMainGfxPos++, pcGfx->renderHole);
+#else
         gSPDisplayList(gMainGfxPos++, ENTITY_ADDR(entity, Gfx*, Gfx_HiddenPanel_RenderHole));
+#endif
         gSPPopMatrix(gMainGfxPos++, G_MTX_MODELVIEW);
     }
+#ifdef BUILD_PC
+    mdl_project_tex_coords(data->modelID, data->renderDList, data->entityMatrix, nullptr);
+#else
     mdl_project_tex_coords(data->modelID, data->renderDList, data->entityMatrix, entity->gfxBaseAddr);
+#endif
     mdl_draw_hidden_panel_surface(&gMainGfxPos, data->modelID);
 }
 
@@ -293,7 +353,12 @@ void entity_HiddenPanel_init(Entity* entity) {
     HiddenPanelData* data = entity->dataBuf.hiddenPanel;
     Matrix4f sp18;
     Matrix4f sp58;
+#ifdef BUILD_PC
+    HiddenPanelPcGfx* pcGfx;
+    EntityModel* entityModel;
+#else
     Gfx* dlist;
+#endif
 
     mem_clear(&gCurrentHiddenPanels, sizeof(gCurrentHiddenPanels));
     entity->renderSetupFunc = entity_HiddenPanel_setupGfx;
@@ -319,6 +384,22 @@ void entity_HiddenPanel_init(Entity* entity) {
     guScaleF(sp58, entity->scale.x, entity->scale.y, entity->scale.z);
     guMtxCatF(sp58, sp18, data->entityMatrix);
 
+#ifdef BUILD_PC
+    pcGfx = entity_HiddenPanel_create_pc_gfx();
+    entity->gfxBaseAddr = pcGfx;
+    entityModel = get_entity_model(entity->virtualModelIndex);
+
+    if (gCurrentHiddenPanels.panelsCount & 1) {
+        data->renderDList = pcGfx->renderTopAlt;
+        entityModel->gfx.displayList = pcGfx->renderAlt;
+    } else {
+        data->renderDList = pcGfx->renderTop;
+        entityModel->gfx.displayList = pcGfx->render;
+    }
+    entityModel->flags |= ENTITY_MODEL_FLAG_DISABLE_SCRIPT;
+
+    mdl_project_tex_coords(data->modelID, data->renderDList, data->entityMatrix, nullptr);
+#else
     if (gCurrentHiddenPanels.panelsCount & 1) {
         dlist = Gfx_AltHiddenPanel_RenderTop;
         entity_set_render_script(entity, &ERS_AltHiddenPanel);
@@ -328,6 +409,7 @@ void entity_HiddenPanel_init(Entity* entity) {
     data->renderDList = ENTITY_ADDR(entity, Gfx*, dlist);
 
     mdl_project_tex_coords(data->modelID, data->renderDList, data->entityMatrix, entity->gfxBaseAddr);
+#endif
     gCurrentHiddenPanels.panelsCount++;
 }
 

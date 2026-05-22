@@ -48,6 +48,19 @@ extern Gfx Gfx_RM3_INTERSECTING_XLU[];
 s32 step_entity_model_commandlist(EntityModel* entityModel);
 void free_entity_model_by_ref(EntityModel* entityModel);
 
+#ifdef BUILD_PC
+static s32 entity_model_list_index(s32 idx) {
+    return (s32)((unsigned int)idx & ~(unsigned int)BATTLE_ENTITY_ID_BIT);
+}
+
+static s32 entity_model_has_battle_bit(s32 idx) {
+    return ((unsigned int)idx & (unsigned int)BATTLE_ENTITY_ID_BIT) != 0;
+}
+#else
+#define entity_model_list_index(idx) ((idx) & ~BATTLE_ENTITY_ID_BIT)
+#define entity_model_has_battle_bit(idx) ((idx) & BATTLE_ENTITY_ID_BIT)
+#endif
+
 void clear_entity_models(void) {
     s32 i;
 
@@ -172,8 +185,8 @@ s32 ALT_load_entity_model(EntityModelScript* cmdList) {
 void exec_entity_model_commandlist(s32 idx) {
     EntityModel* entityModel;
 
-    if (gGameStatusPtr->context == CONTEXT_WORLD || (idx & BATTLE_ENTITY_ID_BIT)) {
-        idx &= ~BATTLE_ENTITY_ID_BIT;
+    if (gGameStatusPtr->context == CONTEXT_WORLD || entity_model_has_battle_bit(idx)) {
+        idx = entity_model_list_index(idx);
         entityModel = (*gCurrentEntityModelList)[idx];
         if (entityModel != nullptr && (entityModel->flags)) {
             if (!(entityModel->flags & ENTITY_MODEL_FLAG_HIDDEN)) {
@@ -249,6 +262,14 @@ void appendGfx_entity_model(EntityModel* model) {
 
     gDisplayContext->matrixStack[gMatrixListPos] = model->transform;
     gSPMatrix(gMainGfxPos++, &gDisplayContext->matrixStack[gMatrixListPos++], G_MTX_PUSH | G_MTX_LOAD | G_MTX_MODELVIEW);
+#ifdef BUILD_PC
+    if (getenv("PM_TRACE_IMGFX")) {
+        fprintf(stderr,
+                "[entity_model] appendGfx model=%p flags=0x%x renderMode=%d use_image=%d\n",
+                (const void *)model, (unsigned)model->flags, (int)model->renderMode,
+                (model->flags & ENTITY_MODEL_FLAG_USE_IMAGE) != 0);
+    }
+#endif
     if (!(model->flags & ENTITY_MODEL_FLAG_USE_IMAGE)) {
         if (!(model->flags & ENTITY_MODEL_FLAG_10000)) {
             gDPPipeSync(gMainGfxPos++);
@@ -394,6 +415,15 @@ void appendGfx_entity_model(EntityModel* model) {
         ifxImg.xOffset = -imageData->width / 2;
         ifxImg.yOffset = imageData->height / 2;
         ifxImg.alpha = 255;
+#ifdef BUILD_PC
+        if (getenv("PM_TRACE_IMGFX")) {
+            fprintf(stderr,
+                    "[entity_model] appendGfx USE_IMAGE imageData=%p raster=%p pal=%p w=%d h=%d\n",
+                    (const void *)imageData,
+                    (const void *)imageData->raster, (const void *)imageData->defaultPal,
+                    (int)imageData->width, (int)imageData->height);
+        }
+#endif
         guMtxL2F(imgfxMtx, &model->transform);
         imgfx_appendGfx_component(0, &ifxImg, 0, imgfxMtx);
     }
@@ -411,8 +441,8 @@ void draw_entity_model_A(s32 modelIdx, Mtx* transformMtx) {
     f32 x, y, z, w;
     f32 inX, inY, inZ;
 
-    if ((gGameStatusPtr->context == CONTEXT_WORLD) || (modelIdx & BATTLE_ENTITY_ID_BIT)) {
-        modelIdx &= ~BATTLE_ENTITY_ID_BIT;
+    if ((gGameStatusPtr->context == CONTEXT_WORLD) || entity_model_has_battle_bit(modelIdx)) {
+        modelIdx = entity_model_list_index(modelIdx);
         model = (*gCurrentEntityModelList)[modelIdx];
 
         if (model != nullptr) {
@@ -449,8 +479,8 @@ void draw_entity_model_B(s32 modelIdx, Mtx* transformMtx, s32 vertexSegment, Vec
     f32 x, y, z, w;
     f32 inX, inY, inZ;
 
-    if ((gGameStatusPtr->context == CONTEXT_WORLD) || (modelIdx & BATTLE_ENTITY_ID_BIT)) {
-        modelIdx &= ~BATTLE_ENTITY_ID_BIT;
+    if ((gGameStatusPtr->context == CONTEXT_WORLD) || entity_model_has_battle_bit(modelIdx)) {
+        modelIdx = entity_model_list_index(modelIdx);
         model = (*gCurrentEntityModelList)[modelIdx];
 
         if (model != nullptr) {
@@ -484,8 +514,8 @@ void draw_entity_model_C(s32 modelIdx, Mtx* transformMtx) {
     RenderTask rt;
     RenderTask* rtPtr = &rt;
 
-    if ((gGameStatusPtr->context == CONTEXT_WORLD) || (modelIdx & BATTLE_ENTITY_ID_BIT)) {
-        modelIdx &= ~BATTLE_ENTITY_ID_BIT;
+    if ((gGameStatusPtr->context == CONTEXT_WORLD) || entity_model_has_battle_bit(modelIdx)) {
+        modelIdx = entity_model_list_index(modelIdx);
         model = (*gCurrentEntityModelList)[modelIdx];
 
         if (model != nullptr) {
@@ -514,8 +544,8 @@ void draw_entity_model_D(s32 modelIdx, Mtx* transformMtx, s32 arg2, Vec3s* verte
     RenderTask rt;
     RenderTask* rtPtr = &rt;
 
-    if ((gGameStatusPtr->context == CONTEXT_WORLD) || (modelIdx & BATTLE_ENTITY_ID_BIT)) {
-        modelIdx &= ~BATTLE_ENTITY_ID_BIT;
+    if ((gGameStatusPtr->context == CONTEXT_WORLD) || entity_model_has_battle_bit(modelIdx)) {
+        modelIdx = entity_model_list_index(modelIdx);
         model = (*gCurrentEntityModelList)[modelIdx];
 
         if (model != nullptr) {
@@ -541,28 +571,52 @@ void draw_entity_model_D(s32 modelIdx, Mtx* transformMtx, s32 arg2, Vec3s* verte
 }
 
 void draw_entity_model_E(s32 modelIdx, Mtx* transformMtx) {
-    EntityModel* model = (*gCurrentEntityModelList)[modelIdx & ~BATTLE_ENTITY_ID_BIT];
+    EntityModel* model = (*gCurrentEntityModelList)[entity_model_list_index(modelIdx)];
     Matrix4f mtx;
     Matrix4f mtx2;
     ImgFXTexture ifxImg;
     Matrix4f imgfxMtx;
 
+#ifdef BUILD_PC
+    int pm_trace_e = getenv("PM_TRACE_IMGFX") != NULL;
+    if (pm_trace_e) {
+        fprintf(stderr, "[entity_model] draw_E enter modelIdx=%d model=%p\n",
+                (int)modelIdx, (const void *)model);
+    }
+#endif
+
     if (model == nullptr) {
         return;
     }
     if (model->flags == 0) {
+#ifdef BUILD_PC
+        if (pm_trace_e) fprintf(stderr, "[entity_model] draw_E EXIT flags=0\n");
+#endif
         return;
     }
     if (model->flags & ENTITY_MODEL_FLAG_100) {
+#ifdef BUILD_PC
+        if (pm_trace_e) fprintf(stderr, "[entity_model] draw_E EXIT FLAG_100\n");
+#endif
         return;
     }
     if (model->flags & ENTITY_MODEL_FLAG_HIDDEN) {
+#ifdef BUILD_PC
+        if (pm_trace_e) fprintf(stderr, "[entity_model] draw_E EXIT HIDDEN\n");
+#endif
         return;
     }
     if (model->flags & ENTITY_MODEL_FLAG_40) {
+#ifdef BUILD_PC
+        if (pm_trace_e) fprintf(stderr, "[entity_model] draw_E EXIT FLAG_40\n");
+#endif
         return;
     }
     if (!(model->flags & ENTITY_MODEL_FLAG_CAM3)) {
+#ifdef BUILD_PC
+        if (pm_trace_e) fprintf(stderr, "[entity_model] draw_E EXIT no-CAM3 flags=0x%x\n",
+                                (unsigned)model->flags);
+#endif
         return;
     }
 
@@ -698,6 +752,15 @@ void draw_entity_model_E(s32 modelIdx, Mtx* transformMtx) {
         ifxImg.xOffset = -imageData->width / 2;
         ifxImg.yOffset = imageData->height / 2;
         ifxImg.alpha = 255;
+#ifdef BUILD_PC
+        if (getenv("PM_TRACE_IMGFX")) {
+            fprintf(stderr,
+                    "[entity_model] draw_E USE_IMAGE imageData=%p raster=%p pal=%p w=%d h=%d\n",
+                    (const void *)imageData,
+                    (const void *)imageData->raster, (const void *)imageData->defaultPal,
+                    (int)imageData->width, (int)imageData->height);
+        }
+#endif
         guMtxL2F(imgfxMtx, &model->transform);
         imgfx_appendGfx_component(0, &ifxImg, 0, imgfxMtx);
     }
@@ -707,7 +770,7 @@ void draw_entity_model_E(s32 modelIdx, Mtx* transformMtx) {
 }
 
 void set_entity_model_render_command_list(s32 idx, EntityModelScript* cmdList) {
-    EntityModel* entityModel = (*gCurrentEntityModelList)[idx & ~BATTLE_ENTITY_ID_BIT];
+    EntityModel* entityModel = (*gCurrentEntityModelList)[entity_model_list_index(idx)];
 
     if (entityModel != nullptr && entityModel->flags) {
         if (cmdList == nullptr) {
@@ -721,11 +784,11 @@ void set_entity_model_render_command_list(s32 idx, EntityModelScript* cmdList) {
 }
 
 EntityModel* get_entity_model(s32 listIndex) {
-    return (*gCurrentEntityModelList)[listIndex & ~BATTLE_ENTITY_ID_BIT];
+    return (*gCurrentEntityModelList)[entity_model_list_index(listIndex)];
 }
 
 void free_entity_model_by_index(s32 idx) {
-    s32 index = idx & ~BATTLE_ENTITY_ID_BIT;
+    s32 index = entity_model_list_index(idx);
     EntityModel* entityModel = (*gCurrentEntityModelList)[index];
 
     if (entityModel != nullptr && entityModel->flags) {
@@ -756,7 +819,7 @@ void free_entity_model_by_ref(EntityModel* entityModel) {
 }
 
 void set_entity_model_flags(s32 idx, s32 newFlags) {
-    EntityModel* entityModel = (*gCurrentEntityModelList)[idx & ~BATTLE_ENTITY_ID_BIT];
+    EntityModel* entityModel = (*gCurrentEntityModelList)[entity_model_list_index(idx)];
 
     if (entityModel != nullptr && entityModel->flags) {
         entityModel->flags |= newFlags;
@@ -764,7 +827,7 @@ void set_entity_model_flags(s32 idx, s32 newFlags) {
 }
 
 void clear_entity_model_flags(s32 idx, s32 newFlags) {
-    EntityModel* entityModel = (*gCurrentEntityModelList)[idx & ~BATTLE_ENTITY_ID_BIT];
+    EntityModel* entityModel = (*gCurrentEntityModelList)[entity_model_list_index(idx)];
 
     if (entityModel != nullptr && entityModel->flags) {
         entityModel->flags &= ~newFlags;
@@ -772,20 +835,20 @@ void clear_entity_model_flags(s32 idx, s32 newFlags) {
 }
 
 void bind_entity_model_setupGfx(s32 idx, void* setupGfxCallbackArg0, void (*fpSetupGfxCallback)(void*)) {
-    EntityModel* entityModel = (*gCurrentEntityModelList)[idx & ~BATTLE_ENTITY_ID_BIT];
+    EntityModel* entityModel = (*gCurrentEntityModelList)[entity_model_list_index(idx)];
 
     entityModel->fpSetupGfxCallback = fpSetupGfxCallback;
     entityModel->setupGfxCallbackArg0 = setupGfxCallbackArg0;
 }
 
 void func_80122F8C(s32 idx, s32 newFlags) {
-    EntityModel* entityModel = (*gCurrentEntityModelList)[idx & ~BATTLE_ENTITY_ID_BIT];
+    EntityModel* entityModel = (*gCurrentEntityModelList)[entity_model_list_index(idx)];
 
     entityModel->flags |= newFlags;
 }
 
 void func_80122FB8(s32 idx, s32 newFlags) {
-    EntityModel* entityModel = (*gCurrentEntityModelList)[idx & ~BATTLE_ENTITY_ID_BIT];
+    EntityModel* entityModel = (*gCurrentEntityModelList)[entity_model_list_index(idx)];
 
     entityModel->flags = (entityModel->flags & ~(ENTITY_MODEL_FLAG_CAM0 | ENTITY_MODEL_FLAG_CAM1 | ENTITY_MODEL_FLAG_CAM2 | ENTITY_MODEL_FLAG_CAM3)) | newFlags;
 }

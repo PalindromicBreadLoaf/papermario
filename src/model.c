@@ -3969,24 +3969,147 @@ void mdl_get_remap_tint_params(u8* primR, u8* primG, u8* primB, u8* envR, u8* en
     *envB = RemapTintMinB;
 }
 
+#ifdef BUILD_PC
+void* pc_resolve_physical_addr(uintptr_t addr);
+extern u8 gPcShapeArena[];
+extern u32 gPcMapShapeDataSize;
+extern u32 gPcMapShapePayloadShift;
+
+#define PC_SHAPE_KSEG_BASE 0x80210000u
+#define PC_SHAPE_PHYS_BASE 0x00210000u
+#define PC_SHAPE_HEADER_SIZE 0x20u
+#define PC_SHAPE_SIZE_LIMIT 0x40000u
+
+static u32 mdl_pc_read_native_u32(const void* ptr) {
+    u32 value;
+
+    memcpy(&value, ptr, sizeof(value));
+    return value;
+}
+
+static uintptr_t mdl_pc_shape_data_size(void) {
+    return gPcMapShapeDataSize != 0 ? gPcMapShapeDataSize : PC_SHAPE_SIZE_LIMIT;
+}
+
+static uintptr_t mdl_pc_shape_source_size(void) {
+    if (gPcMapShapeDataSize > gPcMapShapePayloadShift) {
+        return gPcMapShapeDataSize - gPcMapShapePayloadShift;
+    }
+    return PC_SHAPE_SIZE_LIMIT;
+}
+
+static uintptr_t mdl_pc_shape_offset(uintptr_t offset) {
+    if (offset >= PC_SHAPE_HEADER_SIZE) {
+        return offset + gPcMapShapePayloadShift;
+    }
+    return offset;
+}
+
+static s32 mdl_pc_ptr_in_map_shape(const void* ptr, size_t size) {
+    uintptr_t start = (uintptr_t)ptr;
+    uintptr_t base = (uintptr_t)gPcShapeArena;
+    uintptr_t shapeSize = mdl_pc_shape_data_size();
+
+    return start >= base && size <= shapeSize && start - base <= shapeSize - size;
+}
+
+static Gfx mdl_pc_read_gfx_cmd(const Gfx* gfx, const Gfx** nextGfx) {
+    Gfx cmd = *gfx;
+
+    if (mdl_pc_ptr_in_map_shape(gfx, sizeof(u32) * 2)) {
+        cmd.words.w0 = mdl_pc_read_native_u32(gfx);
+        cmd.words.w1 = mdl_pc_read_native_u32((const u8*)gfx + sizeof(u32));
+        *nextGfx = (const Gfx*)((const u8*)gfx + sizeof(u32) * 2);
+    } else {
+        *nextGfx = gfx + 1;
+    }
+
+    return cmd;
+}
+
+static void* mdl_pc_resolve_gfx_addr(uintptr_t addr) {
+    uintptr_t shapeStart = (uintptr_t)gPcShapeArena;
+    uintptr_t shapeSize = mdl_pc_shape_data_size();
+    u32 guestAddr = (u32)addr;
+    uintptr_t shapeSourceSize = mdl_pc_shape_source_size();
+
+    if (addr >= shapeStart && addr - shapeStart < shapeSize) {
+        return (void*)addr;
+    }
+
+    if (guestAddr >= PC_SHAPE_KSEG_BASE && guestAddr - PC_SHAPE_KSEG_BASE < shapeSourceSize) {
+        return gPcShapeArena + mdl_pc_shape_offset(guestAddr - PC_SHAPE_KSEG_BASE);
+    }
+
+    if (guestAddr >= PC_SHAPE_PHYS_BASE && guestAddr - PC_SHAPE_PHYS_BASE < shapeSourceSize) {
+        return gPcShapeArena + mdl_pc_shape_offset(guestAddr - PC_SHAPE_PHYS_BASE);
+    }
+
+    return pc_resolve_physical_addr(addr);
+}
+#endif
+
 void mdl_get_vertex_count(Gfx* gfx, s32* numVertices, Vtx** baseVtx, s32* gfxCount, Vtx* baseAddr) {
     s8 stuff[2];
 
     s32 vtxCount;
-    u32 w0, w1;
+    u32 w0;
+    uintptr_t w1;
     u32 cmd;
-    u32 vtxEndAddr;
-    s32 minVtx;
-    s32 maxVtx;
-    u32 vtxStartAddr;
+    uintptr_t vtxEndAddr;
+    uintptr_t minVtx;
+    uintptr_t maxVtx;
+    uintptr_t vtxStartAddr;
+    s32 cmdCount;
 
     minVtx = 0;
     maxVtx = 0;
+    cmdCount = 0;
 
     if (gfx == nullptr) {
         *numVertices = 0;
         *baseVtx = nullptr;
     } else {
+#ifdef BUILD_PC
+        const Gfx* curGfx = gfx;
+        const Gfx* nextGfx;
+
+        do {
+            Gfx decoded = mdl_pc_read_gfx_cmd(curGfx, &nextGfx);
+
+            w0 = decoded.words.w0;
+            w1 = decoded.words.w1;
+            cmd = _SHIFTR(w0,24,8);
+            cmdCount++;
+
+            if (cmd == G_VTX) {
+                vtxStartAddr = w1;
+                if (baseAddr != nullptr) {
+                    vtxStartAddr = (vtxStartAddr & 0xFFFF) + (uintptr_t)baseAddr;
+                } else {
+                    vtxStartAddr = (uintptr_t)mdl_pc_resolve_gfx_addr(vtxStartAddr);
+                }
+                vtxCount = _SHIFTR(w0,12,8);
+                if (minVtx == 0) {
+                    minVtx = vtxStartAddr;
+                    maxVtx = vtxStartAddr + (vtxCount * sizeof(Vtx));
+                }
+                vtxEndAddr = vtxStartAddr + (vtxCount * sizeof(Vtx));
+                if (maxVtx < vtxEndAddr) {
+                    maxVtx = vtxEndAddr;
+                }
+                if (minVtx > vtxEndAddr) {
+                    minVtx = vtxEndAddr;
+                }
+            }
+            curGfx = nextGfx;
+        } while (cmd != G_ENDDL);
+
+        *numVertices = (maxVtx - minVtx) >> 4;
+        *baseVtx = (Vtx*)minVtx;
+        *gfxCount = cmdCount;
+        w1 = 64;
+#else
         Gfx* baseGfx = gfx;
 
         do {
@@ -4019,6 +4142,7 @@ void mdl_get_vertex_count(Gfx* gfx, s32* numVertices, Vtx** baseVtx, s32* gfxCou
         *baseVtx = (Vtx*)minVtx;
         *gfxCount = gfx - baseGfx;
         w1 = 64; // TODO required to match -- can be any operation that stores w1
+#endif
     }
 }
 
@@ -4151,8 +4275,16 @@ void mdl_project_tex_coords(s32 modelID, Gfx* outGfx, Matrix4f arg2, Vtx* arg3) 
     dlist = model->modelNode->displayData->displayList;
 
     while (true) {
+#ifdef BUILD_PC
+        const Gfx* nextDlist;
+        Gfx decoded = mdl_pc_read_gfx_cmd(dlist, &nextDlist);
+
+        cmd = decoded.words.w0 >> 0x18;
+        tempVert = mdl_pc_resolve_gfx_addr(decoded.words.w1);
+#else
         cmd = dlist->words.w0 >> 0x18;
         tempVert = (Vtx*)dlist->words.w1;
+#endif
         if (cmd == G_ENDDL) {
             break;
         }
@@ -4160,7 +4292,11 @@ void mdl_project_tex_coords(s32 modelID, Gfx* outGfx, Matrix4f arg2, Vtx* arg3) 
             baseVtx = tempVert;
             break;
         }
+#ifdef BUILD_PC
+        dlist = (Gfx*)nextDlist;
+#else
         dlist++;
+#endif
     }
 
     v0ob0 = baseVtx[zero].v.ob[0];
