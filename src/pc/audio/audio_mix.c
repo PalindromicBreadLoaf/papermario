@@ -1,5 +1,8 @@
 #include <string.h>
 #include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <math.h>
 #include "audio_mix.h"
 #include "vadpcm.h"
 
@@ -7,6 +10,93 @@
 #define ADPCM_ORDER 2
 
 static PcAudioDriver *sDriver;
+
+#if defined(__linux__)
+typedef struct {
+    uintptr_t start;
+    uintptr_t end;
+} PcAudioReadableRange;
+
+#define PC_AUDIO_READABLE_MAX_RANGES 256
+static PcAudioReadableRange sReadableRanges[PC_AUDIO_READABLE_MAX_RANGES];
+static int sReadableRangeCount;
+
+static void pc_audio_refresh_readable_ranges(void) {
+    char line[256];
+    FILE *maps = fopen("/proc/self/maps", "r");
+
+    sReadableRangeCount = 0;
+    if (maps == NULL) {
+        return;
+    }
+
+    while (fgets(line, sizeof(line), maps) != NULL) {
+        unsigned long long mapStart;
+        unsigned long long mapEnd;
+        char perms[5];
+
+        if (sscanf(line, "%llx-%llx %4s", &mapStart, &mapEnd, perms) != 3 || perms[0] != 'r') {
+            continue;
+        }
+
+        if (sReadableRangeCount > 0 && sReadableRanges[sReadableRangeCount - 1].end == (uintptr_t)mapStart) {
+            sReadableRanges[sReadableRangeCount - 1].end = (uintptr_t)mapEnd;
+            continue;
+        }
+
+        if (sReadableRangeCount >= PC_AUDIO_READABLE_MAX_RANGES) {
+            break;
+        }
+        sReadableRanges[sReadableRangeCount].start = (uintptr_t)mapStart;
+        sReadableRanges[sReadableRangeCount].end = (uintptr_t)mapEnd;
+        sReadableRangeCount++;
+    }
+
+    fclose(maps);
+}
+
+static bool pc_audio_range_lookup(uintptr_t start, uintptr_t end) {
+    int lo = 0;
+    int hi = sReadableRangeCount - 1;
+
+    while (lo <= hi) {
+        int mid = (lo + hi) >> 1;
+
+        if (sReadableRanges[mid].end <= start) {
+            lo = mid + 1;
+        } else if (sReadableRanges[mid].start > start) {
+            hi = mid - 1;
+        } else {
+            return end <= sReadableRanges[mid].end;
+        }
+    }
+
+    return false;
+}
+
+static bool pc_audio_range_readable(const void *ptr, size_t size) {
+    uintptr_t start = (uintptr_t)ptr;
+    uintptr_t end = start + size;
+
+    if (ptr == NULL || size == 0 || end < start) {
+        return false;
+    }
+
+    if (sReadableRangeCount == 0) {
+        pc_audio_refresh_readable_ranges();
+    }
+    if (pc_audio_range_lookup(start, end)) {
+        return true;
+    }
+
+    pc_audio_refresh_readable_ranges();
+    return pc_audio_range_lookup(start, end);
+}
+#else
+static bool pc_audio_range_readable(const void *ptr, size_t size) {
+    return ptr != NULL && size != 0;
+}
+#endif
 
 static inline s16 clamp_s16(s32 x) {
     if (x > 32767) return 32767;
@@ -30,19 +120,37 @@ void audio_mix_reset_voice(PcVoiceInfo *v) {
 }
 
 static void mix_voice(PcVoiceInfo *v, s32 *acc_l, s32 *acc_r, int n) {
+    if (v->wav_data == NULL || v->wav_data_len == 0 || !isfinite(v->pitch_ratio) || v->pitch_ratio <= 0.0f) {
+        v->is_playing = false;
+        return;
+    }
+
     if (v->wave_type == 0) {
+        u32 usable_len = (v->wav_data_len / VADPCM_BYTES_PER_FRAME) * VADPCM_BYTES_PER_FRAME;
+
+        if (usable_len == 0
+            || v->predictor == NULL
+            || v->codebook_size < ADPCM_ORDER * 8 * sizeof(s16)
+            || (v->codebook_size % (ADPCM_ORDER * 8 * sizeof(s16))) != 0
+            || !pc_audio_range_readable(v->wav_data, usable_len)
+            || !pc_audio_range_readable(v->predictor, v->codebook_size)) {
+            v->is_playing = false;
+            return;
+        }
+
         if (v->predictor != v->last_predictor || v->codebook_size != v->last_cbsize) {
             vadpcm_book_free(v->book);
             v->book = NULL;
-            if (v->predictor && v->codebook_size > 0) {
-                int npred = (int)v->codebook_size / (ADPCM_ORDER * 8 * 2);
-                if (npred > 0)
-                    v->book = vadpcm_book_create((const s16 *)v->predictor, ADPCM_ORDER, npred);
-            }
+            int npred = (int)v->codebook_size / (ADPCM_ORDER * 8 * sizeof(s16));
+            if (npred > 0)
+                v->book = vadpcm_book_create((const s16 *)v->predictor, ADPCM_ORDER, npred);
             v->last_predictor = v->predictor;
             v->last_cbsize    = v->codebook_size;
         }
         if (!v->book) { v->is_playing = false; return; }
+    } else if (!pc_audio_range_readable(v->wav_data, v->wav_data_len & ~1u)) {
+        v->is_playing = false;
+        return;
     }
 
     int wav_samples = (v->wave_type == 0)
@@ -60,7 +168,7 @@ static void mix_voice(PcVoiceInfo *v, s32 *acc_l, s32 *acc_r, int n) {
             // frame_cache_idx set to one before the loop frame so the while-loop below
             // decodes exactly frame (loop_start / 16) from the saved loop_state.
             v->frame_cache_idx = in_pos / VADPCM_SAMPLES_PER_FRAME - 1;
-            if (v->loop_state) {
+            if (v->loop_state && pc_audio_range_readable(v->loop_state, 16 * sizeof(*v->loop_state))) {
                 for (int k = 0; k < 16; k++) v->adpcm_state[k] = (s32)v->loop_state[k];
             }
         }
@@ -71,8 +179,17 @@ static void mix_voice(PcVoiceInfo *v, s32 *acc_l, s32 *acc_r, int n) {
         if (v->wave_type == 0) {
             int frame_idx = in_pos / VADPCM_SAMPLES_PER_FRAME;
             // Decode frames sequentially up to the needed frame.
+            int max_frame = (int)(v->wav_data_len / VADPCM_BYTES_PER_FRAME);
+            if (frame_idx >= max_frame) {
+                v->is_playing = false;
+                return;
+            }
             while (v->frame_cache_idx < frame_idx) {
                 v->frame_cache_idx++;
+                if (v->frame_cache_idx < 0 || v->frame_cache_idx >= max_frame) {
+                    v->is_playing = false;
+                    return;
+                }
                 const u8 *fp = v->wav_data + (size_t)v->frame_cache_idx * VADPCM_BYTES_PER_FRAME;
                 vadpcm_decode_frame(fp, v->book, v->adpcm_state, v->frame_cache);
             }

@@ -65,6 +65,14 @@ void vadpcm_book_free(VadpcmBook *book) {
 }
 
 void vadpcm_decode_frame(const u8 *src, const VadpcmBook *book, s32 state[16], s16 dst[16]) {
+    if (!src || !book || !book->predictors || !state || !dst
+            || book->order <= 0 || book->order > VADPCM_MAX_ORDER || book->npredictors <= 0) {
+        if (dst) {
+            memset(dst, 0, VADPCM_SAMPLES_PER_FRAME * sizeof(*dst));
+        }
+        return;
+    }
+
     u8  header  = *src++;
     s32 scale   = 1 << (header >> 4);
     s32 optimalp = header & 0xf;
