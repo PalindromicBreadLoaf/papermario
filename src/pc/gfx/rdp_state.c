@@ -31,8 +31,14 @@ void rdp_state_init(void) {
 
     g_rdp.viewport_dirty = true;
     g_rdp.blend_dirty    = true;  // force GL state setup on first draw
-    g_rdp.loaded[0].tile = 0;
-    g_rdp.loaded[1].tile = 1;
+    for (int i = 0; i < GFX_RDP_TILE_COUNT; i++) {
+        g_rdp.loaded_tiles[i].tile = (u8)i;
+        g_rdp.tile_dirty[i] = true;
+    }
+    for (int i = 0; i < GFX_SHADER_TEXTURES; i++) {
+        g_rdp.loaded[i].tile = (u8)i;
+        g_rdp.bound_texture_tile[i] = 0xFF;
+    }
     g_rdp.active_texture_tile = 0;
 
     // Default combiner: output = (0 - 0) * 0 + shade = shade.

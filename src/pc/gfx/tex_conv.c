@@ -70,6 +70,7 @@ static void conv_ia16(const u8 *src, u32 src_bytes, u8 *dst) {
     }
 }
 
+// I-format alpha matches intensity on N64.
 static void conv_i4(const u8 *src, u32 src_bytes, u8 *dst) {
     u32 n = src_bytes * 2;
     for (u32 i = 0; i < n; i++) {
@@ -77,7 +78,7 @@ static void conv_i4(const u8 *src, u32 src_bytes, u8 *dst) {
         dst[4 * i + 0] = intensity;
         dst[4 * i + 1] = intensity;
         dst[4 * i + 2] = intensity;
-        dst[4 * i + 3] = 255;
+        dst[4 * i + 3] = intensity;
     }
 }
 
@@ -86,7 +87,7 @@ static void conv_i8(const u8 *src, u32 src_bytes, u8 *dst) {
         dst[4 * i + 0] = src[i];
         dst[4 * i + 1] = src[i];
         dst[4 * i + 2] = src[i];
-        dst[4 * i + 3] = 255;
+        dst[4 * i + 3] = src[i];
     }
 }
 

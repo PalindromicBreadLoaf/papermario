@@ -35,6 +35,7 @@ static const char *s_frag_src =
     "uniform vec4 u_fog_color;\n"
     "uniform int  u_use_tex;\n"
     "uniform int  u_use_fog;\n"
+    "uniform int  u_alpha_test;\n"
     "uniform int  u_cc_rgb_a;\n"
     "uniform int  u_cc_rgb_b;\n"
     "uniform int  u_cc_rgb_c;\n"
@@ -47,15 +48,16 @@ static const char *s_frag_src =
     "void main() {\n"
     "    vec4 tex0 = ((u_use_tex & 1) != 0) ? texture(u_tex0, v_uv0) : vec4(1.0);\n"
     "    vec4 tex1 = ((u_use_tex & 2) != 0) ? texture(u_tex1, v_uv1) : vec4(1.0);\n"
-    "    vec3 rgb_src[7] = vec3[7](\n"
+    "    vec3 rgb_src[12] = vec3[12](\n"
     "        tex0.rgb, tex1.rgb, v_color.rgb, u_prim.rgb, u_env.rgb,\n"
-    "        vec3(0.0), vec3(1.0));\n"
+    "        vec3(0.0), vec3(1.0),\n"
+    "        vec3(tex0.a), vec3(tex1.a), vec3(v_color.a), vec3(u_prim.a), vec3(u_env.a));\n"
     "    float a_src[7] = float[7](\n"
     "        tex0.a, tex1.a, v_color.a, u_prim.a, u_env.a, 0.0, 1.0);\n"
-    "    vec3  cc_a = rgb_src[clamp(u_cc_rgb_a, 0, 6)];\n"
-    "    vec3  cc_b = rgb_src[clamp(u_cc_rgb_b, 0, 6)];\n"
-    "    vec3  cc_c = rgb_src[clamp(u_cc_rgb_c, 0, 6)];\n"
-    "    vec3  cc_d = rgb_src[clamp(u_cc_rgb_d, 0, 6)];\n"
+    "    vec3  cc_a = rgb_src[clamp(u_cc_rgb_a, 0, 11)];\n"
+    "    vec3  cc_b = rgb_src[clamp(u_cc_rgb_b, 0, 11)];\n"
+    "    vec3  cc_c = rgb_src[clamp(u_cc_rgb_c, 0, 11)];\n"
+    "    vec3  cc_d = rgb_src[clamp(u_cc_rgb_d, 0, 11)];\n"
     "    float ca_a = a_src[clamp(u_cc_a_a, 0, 6)];\n"
     "    float ca_b = a_src[clamp(u_cc_a_b, 0, 6)];\n"
     "    float ca_c = a_src[clamp(u_cc_a_c, 0, 6)];\n"
@@ -65,13 +67,15 @@ static const char *s_frag_src =
     "    color.a   = (ca_a - ca_b) * ca_c + ca_d;\n"
     "    if (u_use_fog != 0)\n"
     "        color.rgb = mix(color.rgb, u_fog_color.rgb, v_color.a);\n"
+    "    if (u_alpha_test != 0 && color.a <= 0.0)\n"
+    "        discard;\n"
     "    frag_color = color;\n"
     "}\n";
 
 typedef struct {
     GLint tex0, tex1;
     GLint prim, env, fog_color;
-    GLint use_tex, use_fog;
+    GLint use_tex, use_fog, alpha_test;
     GLint cc_rgb_a, cc_rgb_b, cc_rgb_c, cc_rgb_d;
     GLint cc_a_a,  cc_a_b,  cc_a_c,  cc_a_d;
 } UniformLocs;
@@ -88,6 +92,7 @@ float  gfx_buf_vbo[GFX_MAX_BUFFERED * 3 * GFX_FLOATS_PER_VTX];
 size_t gfx_buf_vbo_len      = 0;
 size_t gfx_buf_vbo_num_tris = 0;
 int    gfx_use_tex          = 0;
+int    gfx_alpha_test       = 0;
 int    gl_window_width      = 640;
 int    gl_window_height     = 480;
 
@@ -119,6 +124,11 @@ static GLuint compile_shader(GLenum type, const char *src) {
 
 // Public API
 void gl_backend_init(const char *title, int width, int height) {
+    extern bool gfx_trace_state;
+    {
+        const char *env = getenv("PM_TRACE_STATE");
+        if (env && *env && *env != '0') gfx_trace_state = true;
+    }
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         abort();
@@ -204,6 +214,7 @@ void gl_backend_init(const char *title, int width, int height) {
     s_uloc.fog_color = glGetUniformLocation(s_program, "u_fog_color");
     s_uloc.use_tex   = glGetUniformLocation(s_program, "u_use_tex");
     s_uloc.use_fog   = glGetUniformLocation(s_program, "u_use_fog");
+    s_uloc.alpha_test = glGetUniformLocation(s_program, "u_alpha_test");
     s_uloc.cc_rgb_a  = glGetUniformLocation(s_program, "u_cc_rgb_a");
     s_uloc.cc_rgb_b  = glGetUniformLocation(s_program, "u_cc_rgb_b");
     s_uloc.cc_rgb_c  = glGetUniformLocation(s_program, "u_cc_rgb_c");
@@ -292,6 +303,7 @@ void gfx_flush(void) {
     glUniform1i(s_uloc.use_fog, (g_rsp.geometry_mode & G_FOG) ? 1 : 0);
 
     glUniform1i(s_uloc.use_tex, gfx_use_tex);
+    glUniform1i(s_uloc.alpha_test, gfx_alpha_test);
 
     glUniform1i(s_uloc.cc_rgb_a, g_rdp.cc_rgb_a);
     glUniform1i(s_uloc.cc_rgb_b, g_rdp.cc_rgb_b);

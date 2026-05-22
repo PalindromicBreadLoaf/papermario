@@ -26,8 +26,12 @@ void gfx_flush(void);
 // Bind a GL texture to the given unit (0 or 1).
 void gfx_bind_texture(int unit, unsigned int tex_id);
 
-// Number of consecutively-bound texture units (0, 1, or 2); read by gfx_flush.
+// Bound texture-unit bitmask: bit 0 = TEXEL0, bit 1 = TEXEL1.
 extern int gfx_use_tex;
+
+// Non-zero discards fragments with alpha 0 before depth/blend writes.
+// Use an int uniform; Mesa optimized out the previous float threshold.
+extern int gfx_alpha_test;
 
 // Shut down SDL2 and destroy the GL context.
 void gl_backend_shutdown(void);

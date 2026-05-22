@@ -8,14 +8,23 @@ void texture_cache_init(void);
 
 // Look up or create a GL texture for the given N64 texture data.
 // Returns the GL texture object name (unsigned int), or 0 on failure.
-// tlut: required for CI formats; NULL for all others.
+// tlut: CI palette data, or NULL for non-CI formats.
 // width/height: dimensions in texels (from the tile descriptor).
-// cms/cmt: tile wrap/clamp flags from TileDesc.
-unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
-                                u32 size_bytes, u32 stride_bytes,
-                                const u8 *tlut,
-                                u16 width, u16 height,
-                                u8 cms, u8 cmt);
+// cms/cmt and masks/maskt come from TileDesc.
+unsigned int texture_cache_get(
+    const u8* addr,
+    u8        fmt,
+    u8        siz,
+    u32       size_bytes,
+    u32       stride_bytes,
+    const u8* tlut,
+    u16       width,
+    u16       height,
+    u8        cms,
+    u8        cmt,
+    u8        masks,
+    u8        maskt
+);
 
 // Release all cached GL textures (call on context reset or scene change).
 void texture_cache_flush(void);

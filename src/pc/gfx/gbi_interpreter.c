@@ -12,6 +12,7 @@ void* pc_tlb_translate(void* vaddr);
 void* pc_resolve_physical_addr(uintptr_t addr);
 extern u8 gMapShapeData[];
 extern u8 gPcShapeArena[];
+extern u8 heap_collisionHead[];
 extern u32 gPcMapShapeDataSize;
 extern u32 gPcMapShapePayloadShift;
 
@@ -23,9 +24,14 @@ extern u32 gPcMapShapePayloadShift;
 #define PC_SHAPE_PHYS_BASE  0x00210000u
 #define PC_SHAPE_HEADER_SIZE 0x20u
 #define PC_SHAPE_SIZE_LIMIT 0x40000u
+#define PC_COLLISION_HEAP_SIZE 0x18000u
 
 static unsigned int s_texel0_id;
 static unsigned int s_texel1_id;
+
+extern bool gfx_trace_state;
+
+static const u8 *gfx_tlut_for_tile(const TileDesc *td);
 
 static inline u32 bswap32(u32 value) {
     return ((value & 0x000000FFu) << 24)
@@ -141,6 +147,8 @@ static bool gbi_opcode_known(u8 opcode) {
     }
 }
 
+static bool gfx_ptr_range_readable(const void *ptr, size_t size);
+
 // Decode one display-list command and report its byte stride.
 // PC command words are pointer-sized. Decompressed map shape display lists
 // remain packed as 8-byte N64 commands, with w0/w1 in the low/high halves on
@@ -184,6 +192,63 @@ static Gfx gbi_read_cmd(const Gfx *src, int *stride_bytes) {
         *stride_bytes = (int)sizeof(Gfx);
     }
     return cmd;
+}
+
+static bool gfx_dl_has_end(const Gfx *dl, size_t max_bytes) {
+    const u8 *pos = (const u8 *)dl;
+    const u8 *end = pos + max_bytes;
+
+    while (pos < end) {
+        int stride;
+        Gfx cmd;
+        u8 opcode;
+
+        if (!gfx_ptr_range_readable(pos, sizeof(u32) * 2)) {
+            return false;
+        }
+
+        cmd = gbi_read_cmd((const Gfx *)pos, &stride);
+        opcode = (u8)(cmd.words.w0 >> 24);
+        if (!gbi_opcode_known(opcode) || stride <= 0) {
+            return false;
+        }
+        if (opcode == G_ENDDL) {
+            return true;
+        }
+        pos += stride;
+    }
+
+    return false;
+}
+
+static void *gfx_try_shape_shadow_dl_addr(uintptr_t addr) {
+    uintptr_t collision_start = (uintptr_t)heap_collisionHead;
+    uintptr_t collision_end = collision_start + PC_COLLISION_HEAP_SIZE;
+    uintptr_t offset;
+    uintptr_t source_size;
+    u8 *candidate;
+
+    if (addr < collision_start || addr >= collision_end) {
+        return NULL;
+    }
+
+    offset = addr - collision_start;
+    source_size = gfx_shape_source_size();
+    if (offset >= source_size) {
+        return NULL;
+    }
+
+    candidate = gPcShapeArena + gfx_shape_offset(offset);
+    if (!ptr_in_map_shape(candidate, sizeof(u32) * 2)) {
+        return NULL;
+    }
+
+    if (!gfx_dl_has_end((const Gfx *)candidate, 0x1000)
+            || gfx_dl_has_end((const Gfx *)addr, 0x1000)) {
+        return NULL;
+    }
+
+    return candidate;
 }
 
 static void *gfx_default_segment_base(u8 segment) {
@@ -539,10 +604,11 @@ static void gfx_apply_render_state(void) {
 
     glDepthMask((oml & Z_UPD) ? GL_TRUE : GL_FALSE);
 
-    // FORCE_BL: the blender is active regardless of coverage.
-    // CVG_X_ALPHA + ALPHA_CVG_SEL: coverage treated as alpha
-    bool use_alpha = (oml & FORCE_BL) ||
-                    ((oml & CVG_X_ALPHA) && (oml & ALPHA_CVG_SEL));
+    bool alpha_coverage = (oml & CVG_X_ALPHA) != 0;
+    bool use_alpha = (oml & FORCE_BL) || alpha_coverage;
+
+    // Match CVG_X_ALPHA-style cutouts even when render-mode bits do not expose it.
+    gfx_alpha_test = 1;
     if (use_alpha) {
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -560,42 +626,122 @@ static void gfx_ensure_blend_state(void) {
     gfx_apply_render_state();
 }
 
-// If any texture slot is dirty, flush pending triangles (so they keep the old
-// bindings) and then re-upload via the texture cache.
-static void gfx_ensure_textures(void) {
-    if (!g_rdp.textures_dirty[0] && !g_rdp.textures_dirty[1]) return;
+static u16 gfx_tile_width(const TileDesc *td) {
+    return (td->lrs > td->uls) ? (u16)((td->lrs - td->uls) / 4 + 1) : 1;
+}
 
-    gfx_flush();
+static u16 gfx_tile_height(const TileDesc *td) {
+    return (td->lrt > td->ult) ? (u16)((td->lrt - td->ult) / 4 + 1) : 1;
+}
 
-    for (int i = 0; i < 2; i++) {
-        if (!g_rdp.textures_dirty[i]) continue;
-        g_rdp.textures_dirty[i] = false;
+static TmemTextureLoad *gfx_find_tmem_load(u32 tmem) {
+    TmemTextureLoad *best = NULL;
 
-        if (!g_rdp.loaded[i].addr || !g_rdp.loaded[i].size_bytes) continue;
+    for (int i = 0; i < GFX_RDP_TILE_COUNT; i++) {
+        TmemTextureLoad *load = &g_rdp.tmem_loads[i];
 
-        u8 tile = g_rdp.loaded[i].tile < 8 ? g_rdp.loaded[i].tile : (u8)i;
-        TileDesc *td   = &g_rdp.tile[tile];
-        u16 width  = (td->lrs > td->uls) ? (u16)((td->lrs - td->uls) / 4 + 1) : 1;
-        u16 height = (td->lrt > td->ult) ? (u16)((td->lrt - td->ult) / 4 + 1) : 1;
-        const u8 *tlut = (td->fmt == G_IM_FMT_CI) ? g_rdp.tlut : NULL;
-
-        unsigned int tex_id = texture_cache_get(g_rdp.loaded[i].addr,
-                                                td->fmt, td->siz,
-                                                g_rdp.loaded[i].size_bytes,
-                                                g_rdp.loaded[i].stride_bytes,
-                                                tlut, width, height,
-                                                td->cms, td->cmt);
-        if (tex_id) {
-            g_rdp.loaded[i].width = width;
-            g_rdp.loaded[i].height = height;
-            g_rdp.loaded[i].tex_id = tex_id;
+        if (!load->valid || tmem < load->tmem_offset) {
+            continue;
         }
+
+        u32 delta_bytes = (tmem - load->tmem_offset) * 8u;
+
+        if (delta_bytes >= load->size_bytes) {
+            continue;
+        }
+        if (best == NULL || load->tmem_offset > best->tmem_offset) {
+            best = load;
+        }
+    }
+
+    return best;
+}
+
+static TmemTextureLoad *gfx_tmem_load_slot(u32 tmem) {
+    for (int i = 0; i < GFX_RDP_TILE_COUNT; i++) {
+        if (g_rdp.tmem_loads[i].valid && g_rdp.tmem_loads[i].tmem_offset == tmem) {
+            return &g_rdp.tmem_loads[i];
+        }
+    }
+
+    for (int i = 0; i < GFX_RDP_TILE_COUNT; i++) {
+        if (!g_rdp.tmem_loads[i].valid) {
+            return &g_rdp.tmem_loads[i];
+        }
+    }
+
+    return &g_rdp.tmem_loads[0];
+}
+
+static void gfx_store_tmem_load(u32 tmem, const u8 *addr, u32 size_bytes, u32 stride_bytes, u16 width, u16 height) {
+    TmemTextureLoad *load = gfx_tmem_load_slot(tmem);
+
+    load->addr = addr;
+    load->size_bytes = size_bytes;
+    load->stride_bytes = stride_bytes;
+    load->width = width;
+    load->height = height;
+    load->tmem_offset = tmem;
+    load->valid = true;
+}
+
+static void gfx_assign_tmem_load_to_tile(u8 tile, u32 tmem) {
+    TmemTextureLoad *load = gfx_find_tmem_load(tmem);
+
+    if (tile >= GFX_RDP_TILE_COUNT || load == NULL) {
+        return;
+    }
+
+    u32 byte_offset = (tmem - load->tmem_offset) * 8u;
+    LoadedTexture *loaded = &g_rdp.loaded_tiles[tile];
+
+    loaded->addr = load->addr + byte_offset;
+    loaded->size_bytes = load->size_bytes - byte_offset;
+    loaded->stride_bytes = load->stride_bytes;
+    loaded->width = load->width;
+    loaded->height = load->height;
+    loaded->tile = tile;
+    loaded->tex_id = 0;
+    g_rdp.tile_dirty[tile] = true;
+}
+
+static void gfx_upload_tile(u8 tile) {
+    if (tile >= GFX_RDP_TILE_COUNT || !g_rdp.tile_dirty[tile]) {
+        return;
+    }
+
+    g_rdp.tile_dirty[tile] = false;
+
+    LoadedTexture *loaded = &g_rdp.loaded_tiles[tile];
+    TileDesc *td = &g_rdp.tile[tile];
+    u16 width = gfx_tile_width(td);
+    u16 height = gfx_tile_height(td);
+
+    loaded->tile = tile;
+    loaded->width = width;
+    loaded->height = height;
+    loaded->tex_id = 0;
+
+    if (!loaded->addr || !loaded->size_bytes) {
+        return;
+    }
+
+    const u8 *tlut = gfx_tlut_for_tile(td);
+
+    unsigned int tex_id = texture_cache_get(loaded->addr,
+                                            td->fmt, td->siz,
+                                            loaded->size_bytes,
+                                            loaded->stride_bytes,
+                                            tlut, width, height,
+                                            td->cms, td->cmt,
+                                            td->masks, td->maskt);
+    if (tex_id) {
+        loaded->tex_id = tex_id;
     }
 }
 
-static void gfx_bind_active_textures(int tex_slot) {
-    (void)tex_slot;
-    // The combiner names TMEM slot 0 as TEXEL0 and slot 1 as TEXEL1.
+static void gfx_bind_active_textures(void) {
+    // TEXEL0 samples the active render tile; TEXEL1 samples the following tile.
     unsigned int tex0_id = g_rdp.loaded[0].tex_id;
     unsigned int tex1_id = g_rdp.loaded[1].tex_id;
 
@@ -616,6 +762,37 @@ static void gfx_bind_active_textures(int tex_slot) {
 
     // Let tex1 remain valid even when tex0 is empty.
     gfx_use_tex = (tex0_id != 0 ? 1 : 0) | (tex1_id != 0 ? 2 : 0);
+}
+
+static void gfx_prepare_active_textures(void) {
+    u8 tex_tiles[GFX_SHADER_TEXTURES];
+    u8 base_tile = g_rdp.active_texture_tile < GFX_RDP_TILE_COUNT ? g_rdp.active_texture_tile : 0;
+    bool needs_flush = false;
+
+    tex_tiles[0] = base_tile;
+    tex_tiles[1] = (u8)((base_tile + 1u) % GFX_RDP_TILE_COUNT);
+
+    for (int i = 0; i < GFX_SHADER_TEXTURES; i++) {
+        u8 tile = tex_tiles[i];
+
+        if (g_rdp.bound_texture_tile[i] != tile || g_rdp.tile_dirty[tile]) {
+            needs_flush = true;
+        }
+    }
+
+    if (needs_flush) {
+        gfx_flush();
+    }
+
+    for (int i = 0; i < GFX_SHADER_TEXTURES; i++) {
+        u8 tile = tex_tiles[i];
+
+        gfx_upload_tile(tile);
+        g_rdp.loaded[i] = g_rdp.loaded_tiles[tile];
+        g_rdp.bound_texture_tile[i] = tile;
+    }
+
+    gfx_bind_active_textures();
 }
 
 static void gfx_ensure_viewport(void) {
@@ -660,35 +837,25 @@ static void gfx_sp_tri1(u8 v0, u8 v1, u8 v2) {
     gfx_ensure_viewport();
     gfx_ensure_blend_state();
 
-    int tex_slot = g_rdp.active_texture_slot;
-    if (tex_slot < 0 || tex_slot > 1) {
-        tex_slot = 0;
-    }
-
-    u8 tile = g_rdp.active_texture_tile < 8 ? g_rdp.active_texture_tile : g_rdp.loaded[tex_slot].tile;
-    if (tile < 8) {
-        tex_slot = (g_rdp.tile[tile].tmem_offset >= 256u) ? 1 : 0;
-        g_rdp.active_texture_slot = tex_slot;
-        if (g_rdp.loaded[tex_slot].tile != tile) {
-            g_rdp.loaded[tex_slot].tile = tile;
-            g_rdp.textures_dirty[tex_slot] = true;
-        }
-    }
-
-    gfx_ensure_textures();
-    gfx_bind_active_textures(tex_slot);
+    gfx_prepare_active_textures();
     if (gfx_buf_vbo_num_tris == GFX_MAX_BUFFERED) gfx_flush();
 
-    (void)tile;
     float linear_offset = ((g_rdp.other_mode_h & (3u << G_MDSFT_TEXTFILT)) == (u32)G_TF_POINT) ? 0.0f : 16.0f;
 
     // Build UVs per TMEM slot because TEXEL0 and TEXEL1 can use different tile origins.
+    // Use the tile span when upload data is missing.
     float inv_w[2], inv_h[2], uls_s105[2], ult_s105[2];
     for (int s = 0; s < 2; s++) {
         u8 t = g_rdp.loaded[s].tile < 8 ? g_rdp.loaded[s].tile : (u8)s;
         const TileDesc *tds = &g_rdp.tile[t];
         float w = (float)g_rdp.loaded[s].width;
         float h = (float)g_rdp.loaded[s].height;
+        if (w <= 0.0f && tds->lrs >= tds->uls) {
+            w = (float)((u32)(tds->lrs - tds->uls) / 4u + 1u);
+        }
+        if (h <= 0.0f && tds->lrt >= tds->ult) {
+            h = (float)((u32)(tds->lrt - tds->ult) / 4u + 1u);
+        }
         inv_w[s]    = w > 0.0f ? 1.0f / (w * 32.0f) : 1.0f;
         inv_h[s]    = h > 0.0f ? 1.0f / (h * 32.0f) : 1.0f;
         uls_s105[s] = (float)tds->uls * 8.0f;
@@ -718,21 +885,25 @@ static void gfx_sp_tri1(u8 v0, u8 v1, u8 v2) {
 }
 
 // Map G_CCMUX_* / G_ACMUX_* constants to the shader source-array index:
-//   0=tex0  1=tex1  2=shade  3=prim  4=env  5=zero  6=one
+//   0=tex0    1=tex1    2=shade    3=prim    4=env    5=zero   6=one
+//   7=tex0.a  8=tex1.a  9=shade.a  10=prim.a 11=env.a
 //
-// TODO: COMBINED, NOISE, K4, _ALPHA scalars, LOD, etc.
+// Unmodelled muxes fall back to zero or one.
 static int cc_rgb_to_idx(int mux) {
     switch (mux) {
-        case G_CCMUX_TEXEL0:      return 0;
-        case G_CCMUX_TEXEL1:      return 1;
-        case G_CCMUX_SHADE:       return 2;
-        case G_CCMUX_PRIMITIVE:   return 3;
-        case G_CCMUX_ENVIRONMENT: return 4;
+        case G_CCMUX_TEXEL0:          return 0;
+        case G_CCMUX_TEXEL1:          return 1;
+        case G_CCMUX_SHADE:           return 2;
+        case G_CCMUX_PRIMITIVE:       return 3;
+        case G_CCMUX_ENVIRONMENT:     return 4;
         // G_CCMUX_1 = G_CCMUX_CENTER = G_CCMUX_SCALE = 6.
-        // Valid as "one" in A/D slots; B/C use it as chroma-key centre / LOD
-        // scale is approximately 1.0 for now.
-        case 6:                   return 6;
-        default:                  return 5;  // zero
+        case 6:                       return 6;
+        case G_CCMUX_TEXEL0_ALPHA:    return 7;
+        case G_CCMUX_TEXEL1_ALPHA:    return 8;
+        case G_CCMUX_SHADE_ALPHA:     return 9;
+        case G_CCMUX_PRIMITIVE_ALPHA: return 10;
+        case G_CCMUX_ENV_ALPHA:       return 11;
+        default:                      return 5;  // zero
     }
 }
 
@@ -757,7 +928,6 @@ static void gfx_sp_texture(const Gfx *cmd) {
         u8 tile = (u8)C0(8, 3);
 
         g_rdp.active_texture_tile = tile;
-        g_rdp.active_texture_slot = (g_rdp.tile[tile].tmem_offset >= 256u) ? 1 : 0;
     }
 }
 
@@ -842,7 +1012,19 @@ static void gfx_rdp_set_other_mode_h(const Gfx *cmd) {
     u32 shift = 31u - C0(8, 8) - C0(0, 8);
     u32 count = C0(0, 8) + 1u;
     u32 mask  = ((1u << count) - 1u) << shift;
-    g_rdp.other_mode_h = (g_rdp.other_mode_h & ~mask) | (cmd->words.w1 & mask);
+    u32 new_omh = (g_rdp.other_mode_h & ~mask) | (cmd->words.w1 & mask);
+    extern bool gfx_trace_state;
+    if (gfx_trace_state && (mask & (3u << G_MDSFT_CYCLETYPE))) {
+        fprintf(stderr, "SOMH cycle: old=%u new=%u (shift=%u count=%u w1=0x%08X tris_buf=%d)\n",
+                (g_rdp.other_mode_h >> G_MDSFT_CYCLETYPE) & 3,
+                (new_omh >> G_MDSFT_CYCLETYPE) & 3,
+                shift, count, (u32)cmd->words.w1, (int)gfx_buf_vbo_num_tris);
+    }
+    // Cycle type is uploaded at flush time.
+    if ((new_omh ^ g_rdp.other_mode_h) & (3u << G_MDSFT_CYCLETYPE)) {
+        gfx_flush();
+    }
+    g_rdp.other_mode_h = new_omh;
 }
 
 static void gfx_rdp_set_other_mode_l(const Gfx *cmd) {
@@ -858,7 +1040,6 @@ static void gfx_rdp_set_texture_image(const Gfx *cmd) {
     g_rdp.tex_to_load.siz       = (u8)C0(19, 2);
     g_rdp.tex_to_load.width     = (u16)(C0(0, 12) + 1u);
     g_rdp.tex_to_load.addr      = gfx_resolve_addr((uintptr_t)cmd->words.w1);
-    g_rdp.tex_to_load.tile_slot = 0;
 }
 
 static void gfx_rdp_set_tile(const Gfx *cmd) {
@@ -867,22 +1048,27 @@ static void gfx_rdp_set_tile(const Gfx *cmd) {
     u32 line = C0(9, 9);
     u32 tmem = C0(0, 9);
     int tile = (int)C1(24, 3);
+    u8  palette = (u8)C1(20, 4);
     u8  cmt  = (u8)C1(18, 2);
+    u8  maskt = (u8)C1(14, 4);
     u8  cms  = (u8)C1(8,  2);
+    u8  masks = (u8)C1(4,  4);
 
     g_rdp.tile[tile].fmt         = fmt;
     g_rdp.tile[tile].siz         = siz;
     g_rdp.tile[tile].line_bytes  = line * 8;
     g_rdp.tile[tile].tmem_offset = tmem;
+    g_rdp.tile[tile].palette     = palette;
     g_rdp.tile[tile].cms         = cms;
     g_rdp.tile[tile].cmt         = cmt;
+    g_rdp.tile[tile].masks       = masks;
+    g_rdp.tile[tile].maskt       = maskt;
 
     if (tile == G_TX_LOADTILE) {
-        g_rdp.tex_to_load.tile_slot = (tmem >= 256u) ? 1 : 0;
+        g_rdp.tex_to_load.tmem_offset = tmem;
     } else {
-        int slot = (tmem >= 256u) ? 1 : 0;
-        g_rdp.loaded[slot].tile = (u8)tile;
-        g_rdp.textures_dirty[slot] = true;
+        gfx_assign_tmem_load_to_tile((u8)tile, tmem);
+        g_rdp.tile_dirty[tile] = true;
     }
 }
 
@@ -900,16 +1086,10 @@ static u32 load_block_shift(u8 siz) {
 
 static void gfx_rdp_load_block(const Gfx *cmd) {
     u32 lrs     = C1(12, 12);
-    int slot    = g_rdp.tex_to_load.tile_slot;
     u32 n_bytes = (lrs + 1u) << load_block_shift(g_rdp.tex_to_load.siz);
 
-    g_rdp.loaded[slot].addr       = g_rdp.tex_to_load.addr;
-    g_rdp.loaded[slot].size_bytes = n_bytes;
-    g_rdp.loaded[slot].stride_bytes = 0;
-    g_rdp.loaded[slot].width      = 0;
-    g_rdp.loaded[slot].height     = 0;
-    g_rdp.loaded[slot].tex_id     = 0;
-    g_rdp.textures_dirty[slot]    = true;
+    // LoadBlock dimensions are finalised later from the render-tile descriptor.
+    gfx_store_tmem_load(g_rdp.tex_to_load.tmem_offset, g_rdp.tex_to_load.addr, n_bytes, 0, 0, 0);
 }
 
 static u32 texels_to_bytes(u8 siz, u32 texels) {
@@ -927,7 +1107,6 @@ static void gfx_rdp_load_tile(const Gfx *cmd) {
     u32 ult  = C0(0,  12);
     u32 lrs  = C1(12, 12);
     u32 lrt  = C1(0,  12);
-    int slot = g_rdp.tex_to_load.tile_slot;
     u32 src_x = uls / 4u;
     u32 src_y = ult / 4u;
     u32 w    = (lrs - uls) / 4u + 1u;
@@ -942,13 +1121,11 @@ static void gfx_rdp_load_tile(const Gfx *cmd) {
     u32 tile_row_bytes = texels_to_bytes(g_rdp.tex_to_load.siz, w);
     u32 byte_offset = src_y * row_bytes + leading_bytes;
 
-    g_rdp.loaded[slot].addr       = g_rdp.tex_to_load.addr + byte_offset;
-    g_rdp.loaded[slot].size_bytes = tile_row_bytes * h;
-    g_rdp.loaded[slot].stride_bytes = row_bytes;
-    g_rdp.loaded[slot].width      = 0;
-    g_rdp.loaded[slot].height     = 0;
-    g_rdp.loaded[slot].tex_id     = 0;
-    g_rdp.textures_dirty[slot]    = true;
+    // Pre-fill dimensions from the LoadTile rect; SetTileSize will override them.
+    gfx_store_tmem_load(g_rdp.tex_to_load.tmem_offset,
+                        g_rdp.tex_to_load.addr + byte_offset,
+                        tile_row_bytes * h, row_bytes,
+                        (u16)w, (u16)h);
 }
 
 static void gfx_rdp_set_tile_size(const Gfx *cmd) {
@@ -963,17 +1140,75 @@ static void gfx_rdp_set_tile_size(const Gfx *cmd) {
     g_rdp.tile[tile].lrs = lrs;
     g_rdp.tile[tile].lrt = lrt;
 
-    for (int i = 0; i < 2; i++) {
-        if (g_rdp.loaded[i].tile == tile) {
-            g_rdp.textures_dirty[i] = true;
+    if (tile < GFX_RDP_TILE_COUNT) {
+        g_rdp.tile_dirty[tile] = true;
+    }
+}
+
+static const u8 *gfx_tlut_for_tile(const TileDesc *td) {
+    if (td->fmt != G_IM_FMT_CI) {
+        return NULL;
+    }
+
+    if (td->siz == G_IM_SIZ_4b) {
+        u8 palette = td->palette & 0xF;
+        const u8 *result;
+        const char *source;
+
+        if (g_rdp.tlut_pal[palette] != NULL) {
+            result = g_rdp.tlut_pal[palette];
+            source = "tlut_pal";
+        } else if (g_rdp.tlut != NULL) {
+            result = g_rdp.tlut + palette * 0x20;
+            source = "tlut+off";
+        } else {
+            result = NULL;
+            source = "none";
+        }
+
+        if (getenv("PM_TRACE_TLUT")) {
+            fprintf(stderr,
+                    "[tlut] CI4 bank=%u src=%s result=%p tlut=%p tlut_pal[%u]=%p\n",
+                    (unsigned)palette, source, (const void *)result,
+                    (const void *)g_rdp.tlut, (unsigned)palette,
+                    (const void *)g_rdp.tlut_pal[palette]);
+        }
+        return result;
+    }
+
+    if (getenv("PM_TRACE_TLUT")) {
+        fprintf(stderr, "[tlut] CI8 result=%p\n", (const void *)g_rdp.tlut);
+    }
+    return g_rdp.tlut;
+}
+
+static void gfx_rdp_load_tlut(const Gfx *cmd) {
+    u8 tile = (u8)C1(24, 3);
+    u32 count = C1(14, 10) + 1u;
+    TileDesc *td = &g_rdp.tile[tile];
+    u32 first_palette = td->tmem_offset >= 256u ? (td->tmem_offset - 256u) / 16u : 0u;
+
+    gfx_flush();
+
+    if (count >= 256u) {
+        g_rdp.tlut = g_rdp.tex_to_load.addr;
+        for (u32 i = 0; i < 16u; i++) {
+            g_rdp.tlut_pal[i] = g_rdp.tex_to_load.addr + i * 0x20u;
+        }
+    } else {
+        for (u32 offset = 0; offset < count && first_palette < 16u; offset += 16u, first_palette++) {
+            g_rdp.tlut_pal[first_palette] = g_rdp.tex_to_load.addr + offset * sizeof(u16);
+        }
+    }
+
+    for (int i = 0; i < GFX_RDP_TILE_COUNT; i++) {
+        if (g_rdp.tile[i].fmt == G_IM_FMT_CI) {
+            g_rdp.loaded_tiles[i].tex_id = 0;
+            g_rdp.tile_dirty[i] = true;
         }
     }
 }
 
-static void gfx_rdp_load_tlut(const Gfx *cmd) {
-    (void)cmd;
-    g_rdp.tlut = g_rdp.tex_to_load.addr;
-}
 // Convert U10.2 rectangle coordinates to NDC, build four corner vertices at
 // GFX_MAX_VERTICES+0..3, draw two triangles, then flush before restoring state.
 // Callers are responsible for setting u/v and r/g/b/a on the corner vertices and
@@ -1035,7 +1270,6 @@ static void gfx_dp_texture_rectangle(s32 ulx, s32 uly, s32 lrx, s32 lry,
 
     if (tile < 8) {
         g_rdp.active_texture_tile = tile;
-        g_rdp.active_texture_slot = (g_rdp.tile[tile].tmem_offset >= 256u) ? 1 : 0;
     }
 
     if ((g_rdp.other_mode_h & (3u << G_MDSFT_CYCLETYPE)) == G_CYC_COPY) {
@@ -1201,6 +1435,7 @@ static void gfx_rdp_set_blend_color(const Gfx *cmd)  { (void)cmd; }
 
 // w1 layout for all four: RRGGBBAA
 static void gfx_rdp_set_env_color(const Gfx *cmd) {
+    gfx_flush();
     g_rdp.env_r = (u8)(cmd->words.w1 >> 24);
     g_rdp.env_g = (u8)(cmd->words.w1 >> 16);
     g_rdp.env_b = (u8)(cmd->words.w1 >>  8);
@@ -1209,14 +1444,21 @@ static void gfx_rdp_set_env_color(const Gfx *cmd) {
 
 // gDPSetPrimColor also encodes minlevel (w0[15:8]) and lodfrac (w0[7:0]);
 // those affect LOD blending and are ignored on the first pass.
+// Color registers are uploaded at flush time.
 static void gfx_rdp_set_prim_color(const Gfx *cmd) {
+    gfx_flush();
     g_rdp.prim_r = (u8)(cmd->words.w1 >> 24);
     g_rdp.prim_g = (u8)(cmd->words.w1 >> 16);
     g_rdp.prim_b = (u8)(cmd->words.w1 >>  8);
     g_rdp.prim_a = (u8)(cmd->words.w1);
+    if (gfx_trace_state) {
+        fprintf(stderr, "SetPrim rgba=%02X%02X%02X%02X\n",
+                g_rdp.prim_r, g_rdp.prim_g, g_rdp.prim_b, g_rdp.prim_a);
+    }
 }
 
 static void gfx_rdp_set_fog_color(const Gfx *cmd) {
+    gfx_flush();
     g_rdp.fog_r = (u8)(cmd->words.w1 >> 24);
     g_rdp.fog_g = (u8)(cmd->words.w1 >> 16);
     g_rdp.fog_b = (u8)(cmd->words.w1 >>  8);
@@ -1238,7 +1480,68 @@ static void gfx_rdp_set_fill_color(const Gfx *cmd) {
     g_rdp.fill_a = a1 ? 0xFF : 0x00;
 }
 
+// Decoded mux names for diagnostic output.
+static const char *cc_rgb_mux_name(int mux) {
+    switch (mux) {
+        case 0:  return "COMBINED";
+        case 1:  return "TEXEL0";
+        case 2:  return "TEXEL1";
+        case 3:  return "PRIMITIVE";
+        case 4:  return "SHADE";
+        case 5:  return "ENVIRONMENT";
+        case 6:  return "ONE/CENTER";
+        case 7:  return "COMBINED_A/NOISE/K4";
+        case 8:  return "TEXEL0_ALPHA";
+        case 9:  return "TEXEL1_ALPHA";
+        case 10: return "PRIMITIVE_ALPHA";
+        case 11: return "SHADE_ALPHA";
+        case 12: return "ENV_ALPHA";
+        case 13: return "LOD_FRACTION";
+        case 14: return "PRIM_LOD_FRAC";
+        case 15: return "K5";
+        case 31: return "0";
+        default: return "?";
+    }
+}
+static const char *cc_alpha_mux_name(int mux) {
+    switch (mux) {
+        case 0: return "COMBINED/LOD";
+        case 1: return "TEXEL0";
+        case 2: return "TEXEL1";
+        case 3: return "PRIMITIVE";
+        case 4: return "SHADE";
+        case 5: return "ENVIRONMENT";
+        case 6: return "ONE/PRIM_LOD";
+        case 7: return "0";
+        default: return "?";
+    }
+}
+
+// Print each combiner tuple once.
+static u64 cc_seen[64];
+static int cc_seen_count = 0;
+
+static void cc_log_if_new(int rgb_a, int rgb_b, int rgb_c, int rgb_d,
+                          int a_a, int a_b, int a_c, int a_d) {
+    if (!getenv("PM_TRACE_CC")) return;
+    u64 key = ((u64)rgb_a << 0) | ((u64)rgb_b << 5) | ((u64)rgb_c << 10) | ((u64)rgb_d << 15)
+            | ((u64)a_a << 20) | ((u64)a_b << 24) | ((u64)a_c << 28) | ((u64)a_d << 32);
+    for (int i = 0; i < cc_seen_count; i++) {
+        if (cc_seen[i] == key) return;
+    }
+    if (cc_seen_count < 64) cc_seen[cc_seen_count++] = key;
+    fprintf(stderr,
+            "[cc] rgb=(%s, %s, %s, %s)  a=(%s, %s, %s, %s)\n",
+            cc_rgb_mux_name(rgb_a), cc_rgb_mux_name(rgb_b),
+            cc_rgb_mux_name(rgb_c), cc_rgb_mux_name(rgb_d),
+            cc_alpha_mux_name(a_a), cc_alpha_mux_name(a_b),
+            cc_alpha_mux_name(a_c), cc_alpha_mux_name(a_d));
+}
+
 static void gfx_rdp_set_combine(const Gfx *cmd) {
+    // Keep pending triangles on the combiner they were issued under.
+    gfx_flush();
+
     // Decode cycle-0 sub-fields from the GCCc bit layout:
     //   w0[23:20] rgb_a  (saRGB0, 4-bit)
     //   w0[19:15] rgb_c  (mRGB0,  5-bit)
@@ -1258,6 +1561,8 @@ static void gfx_rdp_set_combine(const Gfx *cmd) {
     int a_b   = (int)((cmd->words.w1 >> 12) & 0x7);
     int a_d   = (int)((cmd->words.w1 >>  9) & 0x7);
 
+    cc_log_if_new(rgb_a, rgb_b, rgb_c, rgb_d, a_a, a_b, a_c, a_d);
+
     g_rdp.cc_rgb_a = cc_rgb_to_idx(rgb_a);
     g_rdp.cc_rgb_b = cc_rgb_to_idx(rgb_b);
     g_rdp.cc_rgb_c = cc_rgb_to_idx(rgb_c);
@@ -1266,9 +1571,15 @@ static void gfx_rdp_set_combine(const Gfx *cmd) {
     g_rdp.cc_a_b   = cc_alpha_to_idx(a_b);
     g_rdp.cc_a_c   = cc_alpha_to_idx(a_c);
     g_rdp.cc_a_d   = cc_alpha_to_idx(a_d);
+    if (gfx_trace_state) {
+        fprintf(stderr, "SetCombine cc=(%d,%d,%d,%d) cycle=%u\n",
+                g_rdp.cc_rgb_a, g_rdp.cc_rgb_b, g_rdp.cc_rgb_c, g_rdp.cc_rgb_d,
+                (g_rdp.other_mode_h >> G_MDSFT_CYCLETYPE) & 3);
+    }
 }
 
 bool gfx_dump_dl = false;
+bool gfx_trace_state = false;
 
 static void gbi_dump_cmd(u8 opcode, const Gfx *cmd) {
     switch (opcode) {
@@ -1444,7 +1755,10 @@ void gbi_run_dl(Gfx *dl) {
                 break;
 
             case G_DL: {
-                Gfx *target = gfx_resolve_addr((uintptr_t)cmd->words.w1);
+                Gfx *target = gfx_try_shape_shadow_dl_addr((uintptr_t)cmd->words.w1);
+                if (target == NULL) {
+                    target = gfx_resolve_addr((uintptr_t)cmd->words.w1);
+                }
                 if (C0(16, 8) == G_DL_PUSH && stack_depth < GFX_DL_STACK_DEPTH) {
                     call_origin[stack_depth] = raw_cmd;
                     call_target[stack_depth] = (uintptr_t)cmd->words.w1;

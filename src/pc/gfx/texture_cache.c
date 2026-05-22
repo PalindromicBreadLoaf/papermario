@@ -19,6 +19,8 @@ typedef struct {
     u16       height;
     u8        cms;
     u8        cmt;
+    u8        masks;
+    u8        maskt;
     GLuint    tex_id;
 } TexCacheEntry;
 
@@ -31,7 +33,8 @@ void texture_cache_init(void) {
 }
 
 static unsigned int cache_hash(const u8 *addr, u8 fmt, u8 siz, u32 size_bytes, u32 stride_bytes,
-                                const u8 *tlut, u16 width, u16 height, u8 cms, u8 cmt) {
+                                const u8 *tlut, u16 width, u16 height, u8 cms, u8 cmt,
+                                u8 masks, u8 maskt) {
     uintptr_t h = (uintptr_t)addr * 2654435761u;
     h ^= (uintptr_t)tlut * 40503u;
     h ^= (uintptr_t)size_bytes * 2246822519u;
@@ -39,10 +42,12 @@ static unsigned int cache_hash(const u8 *addr, u8 fmt, u8 siz, u32 size_bytes, u
     h ^= (uintptr_t)((u32)fmt | ((u32)siz << 8) | ((u32)width << 16) | ((u32)height << 24))
          * 3266489917u;
     h ^= (uintptr_t)((u32)cms | ((u32)cmt << 8)) * 668265263u;
+    h ^= (uintptr_t)((u32)masks | ((u32)maskt << 8)) * 2246822519u;
     return (unsigned int)(h & (TEX_CACHE_SLOTS - 1u));
 }
 
-static GLenum wrap_mode(u8 flag) {
+static GLenum wrap_mode(u8 flag, u8 mask) {
+    if (mask == G_TX_NOMASK) return GL_CLAMP_TO_EDGE;
     if (flag & G_TX_CLAMP)  return GL_CLAMP_TO_EDGE;
     if (flag & G_TX_MIRROR) return GL_MIRRORED_REPEAT;
     return GL_REPEAT;
@@ -102,25 +107,69 @@ unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
                                 u32 size_bytes, u32 stride_bytes,
                                 const u8 *tlut,
                                 u16 width, u16 height,
-                                u8 cms, u8 cmt) {
+                                u8 cms, u8 cmt,
+                                u8 masks, u8 maskt) {
     if (s_cache_invalidated) {
         texture_cache_flush();
     }
 
-    if (!addr || !size_bytes || !width || !height) return 0;
+    if (!addr || !size_bytes || !width || !height) {
+        fprintf(stderr,
+                "[texcache] reject zero-arg addr=%p size=%u w=%u h=%u fmt=%u siz=%u\n",
+                (const void *)addr, size_bytes, (unsigned)width, (unsigned)height,
+                (unsigned)fmt, (unsigned)siz);
+        return 0;
+    }
     u32 row_bytes = tex_row_bytes(siz, width);
-    if (!row_bytes) return 0;
+    if (!row_bytes) {
+        fprintf(stderr, "[texcache] reject row_bytes=0 siz=%u w=%u\n",
+                (unsigned)siz, (unsigned)width);
+        return 0;
+    }
     if (stride_bytes == 0) {
         stride_bytes = row_bytes;
     }
-    if (stride_bytes < row_bytes) return 0;
+    if (stride_bytes < row_bytes) {
+        fprintf(stderr, "[texcache] reject stride<row stride=%u row=%u\n",
+                stride_bytes, row_bytes);
+        return 0;
+    }
     u32 packed_bytes = row_bytes * (u32)height;
-    if (size_bytes < packed_bytes) return 0;
+    if (size_bytes < packed_bytes) {
+        // Upload the rows present; wrap/clamp handles over-sampling like the RDP.
+        u16 actual_h = (u16)(size_bytes / row_bytes);
+        if (actual_h == 0) {
+            fprintf(stderr,
+                    "[texcache] reject size<row size=%u row=%u w=%u h=%u fmt=%u siz=%u\n",
+                    size_bytes, row_bytes, (unsigned)width, (unsigned)height,
+                    (unsigned)fmt, (unsigned)siz);
+            return 0;
+        }
+        height = actual_h;
+        packed_bytes = row_bytes * (u32)height;
+    }
     u32 footprint = row_bytes + ((u32)height - 1u) * stride_bytes;
-    if (!ptr_range_readable(addr, footprint)) return 0;
-    if (fmt == G_IM_FMT_CI && !ptr_range_readable(tlut, 0x200)) return 0;
+    if (!ptr_range_readable(addr, footprint)) {
+        fprintf(stderr,
+                "[texcache] reject addr-unreadable addr=%p footprint=%u w=%u h=%u fmt=%u siz=%u\n",
+                (const void *)addr, footprint, (unsigned)width, (unsigned)height,
+                (unsigned)fmt, (unsigned)siz);
+        return 0;
+    }
+    if (fmt == G_IM_FMT_CI) {
+        u32 tlut_bytes = siz == G_IM_SIZ_4b ? 0x20u : 0x200u;
 
-    unsigned int idx = cache_hash(addr, fmt, siz, packed_bytes, stride_bytes, tlut, width, height, cms, cmt);
+        if (!ptr_range_readable(tlut, tlut_bytes)) {
+            fprintf(stderr,
+                    "[texcache] reject tlut-unreadable tlut=%p bytes=%u addr=%p siz=%u\n",
+                    (const void *)tlut, tlut_bytes, (const void *)addr,
+                    (unsigned)siz);
+            return 0;
+        }
+    }
+
+    unsigned int idx = cache_hash(addr, fmt, siz, packed_bytes, stride_bytes, tlut, width, height, cms, cmt,
+                                  masks, maskt);
 
     unsigned int free_slot = TEX_CACHE_SLOTS;
     for (unsigned int i = 0; i < TEX_CACHE_SLOTS; i++) {
@@ -135,7 +184,8 @@ unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
         if (e->addr == addr && e->fmt == fmt && e->siz == siz &&
             e->size_bytes == packed_bytes && e->stride_bytes == stride_bytes && e->tlut == tlut &&
             e->width == width && e->height == height &&
-            e->cms == cms && e->cmt == cmt) {
+            e->cms == cms && e->cmt == cmt &&
+            e->masks == masks && e->maskt == maskt) {
             return e->tex_id;
         }
     }
@@ -166,6 +216,10 @@ unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
     }
 
     if (tex_conv_to_rgba8(fmt, siz, src, packed_bytes, tlut, buf) != TEX_CONV_OK) {
+        fprintf(stderr,
+                "[texcache] reject conv-fail fmt=%u siz=%u src=%p tlut=%p bytes=%u w=%u h=%u\n",
+                (unsigned)fmt, (unsigned)siz, (const void *)src, (const void *)tlut,
+                packed_bytes, (unsigned)width, (unsigned)height);
         free(packed);
         free(buf);
         return 0;
@@ -179,8 +233,8 @@ unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
     free(packed);
     free(buf);
 
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, (GLint)wrap_mode(cms));
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, (GLint)wrap_mode(cmt));
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, (GLint)wrap_mode(cms, masks));
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, (GLint)wrap_mode(cmt, maskt));
 
     GLenum filter = ((g_rdp.other_mode_h & (3u << G_MDSFT_TEXTFILT)) == (u32)G_TF_POINT)
                     ? GL_NEAREST : GL_LINEAR;
@@ -198,6 +252,8 @@ unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
     e->height     = height;
     e->cms        = cms;
     e->cmt        = cmt;
+    e->masks      = masks;
+    e->maskt      = maskt;
     e->tex_id     = tex;
 
     return tex;
@@ -215,8 +271,11 @@ void texture_cache_flush(void) {
 
 void texture_cache_invalidate_all(void) {
     s_cache_invalidated = true;
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < GFX_RDP_TILE_COUNT; i++) {
+        g_rdp.loaded_tiles[i].tex_id = 0;
+        g_rdp.tile_dirty[i] = true;
+    }
+    for (int i = 0; i < GFX_SHADER_TEXTURES; i++) {
         g_rdp.loaded[i].tex_id = 0;
-        g_rdp.textures_dirty[i] = true;
     }
 }
