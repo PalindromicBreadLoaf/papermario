@@ -362,7 +362,11 @@ SpriteComponent** spr_allocate_components(s32 count) {
 
     // data will contain a -1 terminated list, followed by the SpriteComponents
     // corresponding to that list
+#if defined(BUILD_PC)
+    listSize = (count + 1) * sizeof(SpriteComponent*);
+#else
     listSize = (count + 1) * 4;
+#endif
     totalSize = (count * sizeof(SpriteComponent)) + listSize;
 
     if (SpriteUseGeneralHeap) {
@@ -375,7 +379,11 @@ SpriteComponent** spr_allocate_components(s32 count) {
         component = (SpriteComponent*) listPos;
     }
 
+#if defined(BUILD_PC)
+    component = (SpriteComponent*)((u8*)component + listSize);
+#else
     component = (SpriteComponent*)((s32)(component) + (listSize / 4) * 4);
+#endif
 
     // fill list values
     for (i = 0; i < count; i++) {

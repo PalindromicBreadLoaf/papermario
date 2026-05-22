@@ -829,7 +829,11 @@ s32 spr_unused_nop(void) {
 }
 
 s32 spr_update_player_sprite(s32 spriteInstanceID, s32 animID, f32 timeScale) {
+#if defined(BUILD_PC)
+    SpriteAnimData* spriteData;
+#else
     u32* spriteData;
+#endif
     SpriteComponent** compList;
     SpriteComponent* component;
     SpriteAnimComponent** animList;
@@ -849,16 +853,25 @@ s32 spr_update_player_sprite(s32 spriteInstanceID, s32 animID, f32 timeScale) {
         }
     }
 
+#if defined(BUILD_PC)
+    spriteData = PlayerSprites[spriteIdx];
+#else
     spriteData = (u32*)PlayerSprites[spriteIdx];
+#endif
     compList = CurPlayerAnimInfo[instanceIdx].componentList;
 
     if (spriteData == nullptr) {
         return 0;
     }
 
+#if defined(BUILD_PC)
+    rasterList = spriteData->rastersOffset;
+    animList = spriteData->animListStart[animIndex];
+#else
     rasterList = (SpriteRasterCacheEntry**)*spriteData;
     spriteData += 4 + animIndex;
     animList = (SpriteAnimComponent**)*spriteData;
+#endif
 
     spr_set_anim_timescale(timeScale);
     if ((spriteInstanceID & DRAW_SPRITE_OVERRIDE_ALPHA) ||
@@ -886,7 +899,11 @@ s32 spr_draw_player_sprite(s32 spriteInstanceID, s32 yaw, s32 alphaIn, PAL_PTR* 
     SpriteComponent** components;
     f32 zscale;
     u32 alpha;
+#if defined(BUILD_PC)
+    SpriteAnimData* spriteData;
+#else
     u32* spriteData;
+#endif
     s32 spriteIdx;
     s32 spriteIdBackFacing;
 
@@ -895,17 +912,27 @@ s32 spr_draw_player_sprite(s32 spriteInstanceID, s32 yaw, s32 alphaIn, PAL_PTR* 
     }
 
     CurPlayerSpriteIndex = spriteIdx = SPR_UNPACK_SPR(animID) - 1;
+#if defined(BUILD_PC)
+    spriteData = PlayerSprites[spriteIdx];
+#else
     spriteData = (u32*)PlayerSprites[spriteIdx];
+#endif
     if (spriteData == nullptr) {
         return false;
     }
 
+#if defined(BUILD_PC)
+    rasters = spriteData->rastersOffset;
+    palettes = spriteData->palettesOffset;
+    animComponents = spriteData->animListStart[SPR_UNPACK_ANIM(animID)];
+#else
     // TODO: fake match or not?
     rasters = (SpriteRasterCacheEntry**)*spriteData++;
     palettes = (PAL_PTR*)*spriteData++;
     spriteData++;
     spriteData++;
     animComponents = (SpriteAnimComponent**)spriteData[SPR_UNPACK_ANIM(animID)];
+#endif
 
     if (animID & SPRITE_ID_BACK_FACING) {
         switch (spriteIdx) {
@@ -913,10 +940,14 @@ s32 spr_draw_player_sprite(s32 spriteInstanceID, s32 yaw, s32 alphaIn, PAL_PTR* 
             case SPR_MarioW1 - 1:
             case SPR_Peach1 - 1:
                 spriteIdBackFacing = spriteIdx + 1;
+                CurPlayerSpriteIndex = spriteIdBackFacing;
+#if defined(BUILD_PC)
+                rasters = PlayerSprites[spriteIdBackFacing]->rastersOffset;
+#else
                 // TODO find better match
                 rasters = (SpriteRasterCacheEntry**)PlayerSprites[spriteIdBackFacing];
-                CurPlayerSpriteIndex = spriteIdBackFacing;
                 rasters = (SpriteRasterCacheEntry**)*rasters;
+#endif
                 break;
         }
     }
@@ -1077,7 +1108,11 @@ s32 spr_load_npc_sprite(s32 animID, u32* extraAnimList) {
 }
 
 s32 spr_update_sprite(s32 spriteInstanceID, s32 animID, f32 timeScale) {
+#if defined(BUILD_PC)
+    SpriteAnimData* spriteData;
+#else
     u32* spriteData;
+#endif
     SpriteComponent** compList;
     SpriteAnimComponent** animList;
     SpriteRasterCacheEntry** rasterList;
@@ -1087,11 +1122,20 @@ s32 spr_update_sprite(s32 spriteInstanceID, s32 animID, f32 timeScale) {
     s32 animIndex = SPR_UNPACK_ANIM(animID);
 
     compList = SpriteInstances[i].componentList;
+#if defined(BUILD_PC)
+    spriteData = SpriteInstances[i].spriteData;
+#else
     spriteData = (u32*)SpriteInstances[i].spriteData;
+#endif
 
+#if defined(BUILD_PC)
+    rasterList = spriteData->rastersOffset;
+    animList = spriteData->animListStart[animIndex];
+#else
     rasterList = (SpriteRasterCacheEntry**)*spriteData;
     spriteData += 4 + animIndex;
     animList = (SpriteAnimComponent**)*spriteData;
+#endif
 
     palID = SPR_UNPACK_PAL(animID);
     spr_set_anim_timescale(timeScale);
@@ -1116,20 +1160,34 @@ s32 spr_draw_npc_sprite(s32 spriteInstanceID, s32 yaw, s32 alphaIn, PAL_PTR* pal
     SpriteComponent** components;
     f32 zscale;
     u32 alpha;
+#if defined(BUILD_PC)
+    SpriteAnimData* spriteData;
+#else
     u32* spriteData;
+#endif
 
     if (animID == ANIM_LIST_END) {
         return false;
     }
 
+#if defined(BUILD_PC)
+    spriteData = SpriteInstances[i].spriteData;
+#else
     spriteData = (u32*)SpriteInstances[i].spriteData;
+#endif
 
+#if defined(BUILD_PC)
+    rasters = spriteData->rastersOffset;
+    palettes = spriteData->palettesOffset;
+    animComponents = spriteData->animListStart[SPR_UNPACK_ANIM(animID)];
+#else
     // TODO: fake match or not?
     rasters = (SpriteRasterCacheEntry**)*spriteData++;
     palettes = (PAL_PTR*)*spriteData++;
     spriteData++;
     spriteData++;
     animComponents = (SpriteAnimComponent**)spriteData[SPR_UNPACK_ANIM(animID)];
+#endif
 
     SpriteCurBaseRot[0] = 0;
     SpriteCurBaseRot[1] = yaw;
@@ -1267,7 +1325,11 @@ s32 spr_get_comp_position(s32 spriteIdx, s32 compListIdx, s32* outX, s32* outY, 
     SpriteComponent* comp;
     u8 animID;
     s32 i;
+#if defined(BUILD_PC)
+    SpriteAnimData* spriteData;
+#else
     u32* spriteData;
+#endif
 
     if (sprite->componentList == nullptr) {
         return; // bug: does not return a value
@@ -1275,11 +1337,16 @@ s32 spr_get_comp_position(s32 spriteIdx, s32 compListIdx, s32* outX, s32* outY, 
 
     animID = sprite->curAnimID;
     if (animID != 255) {
+#if defined(BUILD_PC)
+        spriteData = sprite->spriteData;
+        animCompList = spriteData->animListStart[animID];
+#else
         // following 3 lines equivalent to:
         // animCompList = sprite->spriteData->animListStart[animID];
         spriteData = (u32*)sprite->spriteData;
         spriteData += 4 + animID;
         animCompList = (SpriteAnimComponent**)*spriteData;
+#endif
         compList = sprite->componentList;
         i = 0;
         while (*compList != PTR_LIST_END) {

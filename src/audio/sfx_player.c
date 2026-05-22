@@ -1,5 +1,8 @@
 #include "audio.h"
 #include "audio/core.h"
+#ifdef BUILD_PC
+#include <stdio.h>
+#endif
 
 static void au_sfx_play_sound(SoundManager* manager, SoundPlayer* player, s8* readPos, SoundRequest* request, s32 priority, s32 exclusiveID);
 static void au_sfx_set_triggers(SoundManager* manager, u32 soundID);
@@ -762,6 +765,19 @@ void au_sfx_try_sound(SoundManager* manager, SoundRequest* request, SoundManager
     u32 soundIndex = (request->soundID - 1) & 0xFF;
     u16 soundIDLower = request->soundID & SOUND_ID_LOWER;
     u16 soundID = request->soundID;
+
+#ifdef BUILD_PC
+    // Temporary page-flip SFX trace.
+    if ((soundIDLower & 0xFFF) == 0xB0) {
+        u32 si = (request->soundID - 1) & 0xFF;
+        u32 sec = (request->soundID >> 8) & 3;
+        u16 *cl = (u16 *)&manager->normalSounds[sec][si];
+        fprintf(stderr, "[SFX 0xB0] state=%d sec=%u idx=0x%X cmdList=0x%04X info=0x%04X normalSounds[sec]=%p\n",
+                manager->state, sec, si, (unsigned)cl[0], (unsigned)cl[1],
+                (void*)manager->normalSounds[sec]);
+        fflush(stderr);
+    }
+#endif
 
     if (soundID & SOUND_ID_UNK) {
         // sound from extra section
