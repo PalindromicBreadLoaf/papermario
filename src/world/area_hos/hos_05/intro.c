@@ -1435,6 +1435,11 @@ void N(worker_draw_story_graphics)(void) {
     gSPDisplayList(gMainGfxPos++, N(gfx_setup_story_viewport));
     gDPSetColorImage(gMainGfxPos++, G_IM_FMT_RGBA, G_IM_SIZ_16b, SCREEN_WIDTH, nuGfxCfb_ptr);
 
+#ifdef BUILD_PC
+    // PM_CC_10 uses primitive alpha; avoid inheriting narrator text fades.
+    gDPSetPrimColor(gMainGfxPos++, 0, 0, 255, 255, 255, 255);
+#endif
+
     if (N(StoryGraphicsPtr)->storyPageAlpha < 255) {
         gDPSetRenderMode(gMainGfxPos++, G_RM_CLD_SURF, G_RM_CLD_SURF2);
         gDPSetPrimColor(gMainGfxPos++, 0, 0, 0, 0, 0, N(StoryGraphicsPtr)->storyPageAlpha);
@@ -1506,9 +1511,13 @@ void N(load_story_image)(s32 loadBackImage, s32 imageIdx) {
             img[i] = 0;
         }
 
-        // Fill the frame with off-white.
+        // Fill the frame with off-white; PC palette reads expect big-endian words.
         for (i = 0; i < 256; i++) {
-            *pal++ = GPACK_RGBA5551(212, 212, 212, 1);
+            u16 entry = GPACK_RGBA5551(212, 212, 212, 1);
+#ifdef BUILD_PC
+            entry = (u16) ((entry >> 8) | (entry << 8));
+#endif
+            *pal++ = entry;
         }
         return;
     }

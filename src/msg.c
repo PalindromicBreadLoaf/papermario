@@ -3,8 +3,11 @@
 #include "message_ids.h"
 #include "sprite.h"
 
+#include <stdint.h>
+
 #include "charset/charset.h"
 #if defined(BUILD_PC)
+#include "asset_loader.h"
 #define PC_REMAP_CHARSET_OFFSET_SYMBOLS
 #include "pc_charset_offsets.h"
 #undef PC_REMAP_CHARSET_OFFSET_SYMBOLS
@@ -32,6 +35,10 @@ enum RewindArrowStates {
 #define CHOICE_POINTER_MOVE_RATE 5.0
 #else
 #define CHOICE_POINTER_MOVE_RATE 6.0
+#endif
+
+#if defined(BUILD_PC)
+#define MSG_PC_POINTER_THRESHOLD 0x1000000
 #endif
 
 typedef MessageImageData* MessageImageDataList[1];
@@ -65,6 +72,47 @@ void* D_PAL_8014AE50[] = {
 #endif
 
 s16 gNextMessageBuffer = 0;
+
+static s32 msg_id_is_pointer(s32 msgID) {
+#if defined(BUILD_PC)
+    return (uintptr_t)msgID >= MSG_PC_POINTER_THRESHOLD;
+#else
+    return msgID < 0;
+#endif
+}
+
+static u8* msg_id_as_pointer(s32 msgID) {
+    return (u8*)(uintptr_t)msgID;
+}
+
+#if defined(BUILD_PC)
+static s32 msg_pc_rom_range_valid(const u8* romAddr, u32 size) {
+    uintptr_t offset = (uintptr_t)romAddr;
+    u32 romSize = asset_loader_rom_size();
+
+    return romSize != 0 && offset <= romSize && size <= romSize - offset;
+}
+
+static void msg_pc_write_empty(void* dest) {
+    ((u8*)dest)[0] = MSG_CHAR_READ_END;
+}
+
+static u32 msg_read_rom_offset(u8* romAddr) {
+    u8 bytes[4];
+
+    dma_copy(romAddr, romAddr + sizeof(bytes), bytes);
+    return ((u32)bytes[0] << 24) | ((u32)bytes[1] << 16) | ((u32)bytes[2] << 8) | bytes[3];
+}
+
+static s32 msg_read_rom_offset_checked(u8* romAddr, u32* outOffset) {
+    if (!msg_pc_rom_range_valid(romAddr, sizeof(*outOffset))) {
+        return false;
+    }
+
+    *outOffset = msg_read_rom_offset(romAddr);
+    return true;
+}
+#endif
 
 Vtx gRewindArrowQuad[] = {
     { .v = { .ob = { 0xFFF0, 0x0009, 0x0000 }, .tc = { 0x0000, 0x0000 }, .cn = { 0xFF, 0xFF, 0xFF, 0xFF }}},
@@ -1308,7 +1356,7 @@ void msg_copy_to_print_buffer(MessagePrintState* printer, s32 arg1, s32 arg2) {
 
     printer->printBufferPos = printBuf - printer->printBuffer;
     printer->delayFlags = 0;
-    printer->srcBufferPos = (u16)(s32)(srcBuf - (s32)printer->srcBuffer);
+    printer->srcBufferPos = (u16)(srcBuf - printer->srcBuffer);
     *printBuf = MSG_CHAR_PRINT_END;
 }
 
@@ -1389,6 +1437,26 @@ void initialize_printer(MessagePrintState* printer, s32 arg1, s32 arg2) {
 
 #if VERSION_PAL
 void dma_load_msg(u32 msgID, void* dest) {
+#if defined(BUILD_PC)
+    u8* langPtr = D_PAL_8014AE50[gCurrentLanguage];
+    u32 sectionOffset;
+    u8* addr;
+    u32 offset[2];
+
+    if (!msg_read_rom_offset_checked(langPtr + (msgID >> 14), &sectionOffset)) {
+        msg_pc_write_empty(dest);
+        return;
+    }
+    addr = langPtr + sectionOffset + ((msgID & 0xFFFF) * 4);
+    if (!msg_read_rom_offset_checked(addr, &offset[0])
+            || !msg_read_rom_offset_checked(addr + 4, &offset[1])
+            || offset[1] < offset[0]
+            || !msg_pc_rom_range_valid(langPtr + offset[0], offset[1] - offset[0])) {
+        msg_pc_write_empty(dest);
+        return;
+    }
+    dma_copy(langPtr + offset[0], langPtr + offset[1], dest);
+#else
     u8* langPtr = D_PAL_8014AE50[gCurrentLanguage];
     u8* new_langPtr;
     u8* addr = (u8*) langPtr + (msgID >> 14); // (msgID >> 16) * 4
@@ -1403,9 +1471,30 @@ void dma_load_msg(u32 msgID, void* dest) {
 
     // Load the msg data
     dma_copy(&langPtr[(u32)offset[0]], &langPtr[(u32)offset[1]], dest);
+#endif
 }
 #else
 void dma_load_msg(u32 msgID, void* dest) {
+#if defined(BUILD_PC)
+    u8* msgRomStart = (u8*)MSG_ROM_START;
+    u32 sectionOffset;
+    u8* addr;
+    u32 offset[2];
+
+    if (!msg_read_rom_offset_checked(msgRomStart + (msgID >> 14), &sectionOffset)) {
+        msg_pc_write_empty(dest);
+        return;
+    }
+    addr = msgRomStart + sectionOffset + ((msgID & 0xFFFF) * 4);
+    if (!msg_read_rom_offset_checked(addr, &offset[0])
+            || !msg_read_rom_offset_checked(addr + 4, &offset[1])
+            || offset[1] < offset[0]
+            || !msg_pc_rom_range_valid(msgRomStart + offset[0], offset[1] - offset[0])) {
+        msg_pc_write_empty(dest);
+        return;
+    }
+    dma_copy(msgRomStart + offset[0], msgRomStart + offset[1], dest);
+#else
     u8* addr = (u8*) MSG_ROM_START + (msgID >> 14); // (msgID >> 16) * 4
     u8* offset[2]; // start, end
 
@@ -1416,6 +1505,7 @@ void dma_load_msg(u32 msgID, void* dest) {
 
     // Load the msg data
     dma_copy(MSG_ROM_START + offset[0], MSG_ROM_START + offset[1], dest);
+#endif
 }
 #endif
 
@@ -1451,9 +1541,9 @@ MessagePrintState* _msg_get_printer_for_msg(s32 msgID, bool* donePrintingWriteba
         return nullptr;
     }
 
-    srcBuffer = (s8*) msgID;
-    if (msgID >= 0) {
-        srcBuffer = load_message_to_buffer((s32)srcBuffer);
+    srcBuffer = (s8*)msg_id_as_pointer(msgID);
+    if (!msg_id_is_pointer(msgID)) {
+        srcBuffer = load_message_to_buffer(msgID);
     }
 
     for (i = 0; i < ARRAY_COUNT(gMessagePrinters); i++) {
@@ -1486,10 +1576,10 @@ MessagePrintState* _msg_get_printer_for_msg(s32 msgID, bool* donePrintingWriteba
 s32 msg_printer_load_msg(s32 msgID, MessagePrintState* printer) {
     s8* buffer;
 
-    if (msgID >= 0) {
+    if (!msg_id_is_pointer(msgID)) {
         buffer = load_message_to_buffer(msgID);
     } else {
-        buffer = (s8*) msgID;
+        buffer = (s8*)msg_id_as_pointer(msgID);
     }
 
     printer->srcBuffer = buffer;
@@ -1531,20 +1621,23 @@ void set_message_images(MessageImageData* images) {
 
 void set_message_text_var(s32 msgID, s32 index) {
     u8* mallocSpace = nullptr;
+    u8* source;
     s32 i;
     u8* msgVars;
 
-    if (msgID >= 0) {
+    if (!msg_id_is_pointer(msgID)) {
         mallocSpace = general_heap_malloc(0x400);
         dma_load_msg(msgID, mallocSpace);
-        msgID = (s32)mallocSpace;
+        source = mallocSpace;
+    } else {
+        source = msg_id_as_pointer(msgID);
     }
 
     i = 0;
     msgVars = gMessageMsgVars[index];
     while (true) {
-        msgVars[i] = ((u8*)msgID)[i];
-        if (((u8*)msgID)[i] == MSG_CHAR_READ_END) {
+        msgVars[i] = source[i];
+        if (source[i] == MSG_CHAR_READ_END) {
             break;
         }
 
@@ -1727,12 +1820,12 @@ void get_msg_properties(s32 msgID, s32* height, s32* width, s32* maxLineChars, s
         return;
     }
 
-    if (msgID >= 0) {
+    if (!msg_id_is_pointer(msgID)) {
         buffer = general_heap_malloc(0x400);
         dma_load_msg(msgID, buffer);
         message = buffer;
     } else {
-        message = (u8*)msgID;
+        message = msg_id_as_pointer(msgID);
     }
 
     if (charset & 1) {
@@ -2023,13 +2116,13 @@ void draw_msg(s32 msgID, s32 posX, s32 posY, s32 opacity, s32 palette, u8 style)
         printer = &stackPrinter;
         initialize_printer(printer, 1, 0);
 
-        if (msgID < 0) {
-            printer->srcBuffer = (u8*)msgID;
+        if (msg_id_is_pointer(msgID)) {
+            printer->srcBuffer = msg_id_as_pointer(msgID);
         } else {
             mallocSpace = general_heap_malloc(0x400);
             dma_load_msg(msgID, mallocSpace);
             printer->srcBuffer = mallocSpace;
-            get_msg_properties((s32) printer->srcBuffer, 0, &width, 0, 0, 0, 0, charset);
+            get_msg_properties(msgID, 0, &width, 0, 0, 0, 0, charset);
             printer->msgWidth = width;
         }
 

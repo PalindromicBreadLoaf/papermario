@@ -2,6 +2,7 @@
 #include "ld_addrs.h"
 #include "sprite.h"
 #include "imgfx.h"
+#include "gcc/string.h"
 
 typedef union ImgFXIntVars {
     s32 raw[2][4];
@@ -727,7 +728,22 @@ s32 imgfx_appendGfx_component(s32 idx, ImgFXTexture* ifxImg, u32 flagBits, Matri
     ImgFXState* state = &(*ImgFXInstances)[idx];
     s32 ret = 0;
 
+#ifdef BUILD_PC
+    if (getenv("PM_TRACE_IMGFX")) {
+        fprintf(stderr,
+                "[imgfx] component idx=%d raster=%p palette=%p w=%d h=%d alpha=%d flags=0x%x\n",
+                (int)idx, (const void *)ifxImg->raster, (const void *)ifxImg->palette,
+                (int)ifxImg->width, (int)ifxImg->height, (int)ifxImg->alpha,
+                (unsigned)flagBits);
+    }
+#endif
+
     if (ifxImg->alpha == 0) {
+#ifdef BUILD_PC
+        if (getenv("PM_TRACE_IMGFX")) {
+            fprintf(stderr, "[imgfx] component idx=%d EARLY-EXIT alpha=0\n", (int)idx);
+        }
+#endif
         return 0;
     }
 
@@ -744,10 +760,21 @@ s32 imgfx_appendGfx_component(s32 idx, ImgFXTexture* ifxImg, u32 flagBits, Matri
     ImgFXCurrentTexturePtr->alphaMultiplier = ifxImg->alpha;
 
     if (idx < 0 || idx >= MAX_IMGFX_INSTANCES) {
+#ifdef BUILD_PC
+        if (getenv("PM_TRACE_IMGFX")) {
+            fprintf(stderr, "[imgfx] component EARLY-EXIT idx-bad idx=%d max=%d\n",
+                    (int)idx, (int)MAX_IMGFX_INSTANCES);
+        }
+#endif
         return 0;
     }
 
     if (idx >= MAX_IMGFX_INSTANCES || state == nullptr) {
+#ifdef BUILD_PC
+        if (getenv("PM_TRACE_IMGFX")) {
+            fprintf(stderr, "[imgfx] component EARLY-EXIT state=null idx=%d\n", (int)idx);
+        }
+#endif
         return 0;
     }
 
@@ -1207,16 +1234,31 @@ void imgfx_mesh_make_grid(ImgFXState* state) {
 }
 
 ImgFXAnimHeader* imgfx_load_anim(ImgFXState* state) {
+#ifdef BUILD_PC
+    u8* animData = ImgFXAnimOffsets[state->ints.anim.type];
+#else
     u8* romStart = (s32) ImgFXAnimOffsets[state->ints.anim.type] + imgfx_data_ROM_START;
+#endif
     ImgFXAnimHeader* anim = &ImgFXAnimHeaders[state->arrayIdx];
 
+#ifdef BUILD_PC
+    if (state->curAnimOffset != animData) {
+#else
     if (state->curAnimOffset != romStart) {
+#endif
+#ifndef BUILD_PC
         u8* romEnd;
+#endif
         s32 i;
 
+#ifdef BUILD_PC
+        state->curAnimOffset = animData;
+        memcpy(anim, animData, sizeof(*anim));
+#else
         state->curAnimOffset = romStart;
 
         dma_copy(state->curAnimOffset, state->curAnimOffset + sizeof(*anim), anim);
+#endif
 
         if (state->vtxBufs[0] != nullptr) {
             imgfx_add_to_cache(state->vtxBufs[0], 1);
@@ -1232,7 +1274,9 @@ ImgFXAnimHeader* imgfx_load_anim(ImgFXState* state) {
         }
         if (state->gfxBufs[1] != nullptr) {
             // imgfx_add_to_cache(state->gfxBufs[1], 1);
+#ifndef BUILD_PC
             romEnd = (u8*) state->gfxBufs[1]; // required to match
+#endif
             imgfx_add_to_cache(state->gfxBufs[1], 1);
             state->gfxBufs[1] = nullptr;
         }
@@ -1241,10 +1285,15 @@ ImgFXAnimHeader* imgfx_load_anim(ImgFXState* state) {
         state->gfxBufs[0] = heap_malloc(anim->gfxCount * sizeof(Gfx));
         state->gfxBufs[1] = heap_malloc(anim->gfxCount * sizeof(Gfx));
 
+#ifdef BUILD_PC
+        memcpy(state->gfxBufs[0], anim->gfxOffset, anim->gfxCount * sizeof(Gfx));
+        memcpy(state->gfxBufs[1], anim->gfxOffset, anim->gfxCount * sizeof(Gfx));
+#else
         romStart = imgfx_data_ROM_START + (s32)anim->gfxOffset;
         romEnd = romStart + anim->gfxCount * sizeof(Gfx);
         dma_copy(romStart, romEnd, state->gfxBufs[0]);
         dma_copy(romStart, romEnd, state->gfxBufs[1]);
+#endif
 
         // Search through the state's displaylists for vertex commands
         // and adjust their addresses to point into the vertex buffers
@@ -1263,8 +1312,13 @@ ImgFXAnimHeader* imgfx_load_anim(ImgFXState* state) {
                     // ImgFXVtx structs are 0xC bytes while Vtx are 0x10, so we need a (4/3) scaling factor
                     // to compute a new, equivalent Vtx[i] address for an existing ImgFXVtx[i] address.
                     // Unfortunately, using sizeof here does not match.
+#ifdef BUILD_PC
+                    uintptr_t vtxOffset = (uintptr_t)gfxBuffer[j-1].words.w1 - (uintptr_t)anim->keyframesOffset;
+                    gfxBuffer[j-1].words.w1 = ((vtxOffset / 3) * 4) + (uintptr_t)state->vtxBufs[i];
+#else
                     gfxBuffer[j-1].words.w1 = ((((s32) gfxBuffer[j-1].words.w1 - (s32) anim->keyframesOffset) / 3) * 4) +
                                               (s32) state->vtxBufs[i];
+#endif
                 }
             } while (cmd != G_ENDDL);
         }
@@ -1283,7 +1337,9 @@ void imgfx_mesh_anim_update(ImgFXState* state) {
     s32 animStep = state->ints.anim.step;
     s32 curSubframe = state->floats.anim.curFrame;
     ImgFXAnimHeader* header = imgfx_load_anim(state);
+#ifndef BUILD_PC
     u8* romStart;
+#endif
     f32 lerpAlpha;
     s32 i;
 
@@ -1323,12 +1379,22 @@ void imgfx_mesh_anim_update(ImgFXState* state) {
 
     // find the current + next keyframe vertex data
     curKeyframe = heap_malloc(header->vtxCount * sizeof(ImgFXVtx));
+#ifdef BUILD_PC
+    memcpy(curKeyframe, header->keyframesOffset + curKeyIdx * header->vtxCount,
+           header->vtxCount * sizeof(ImgFXVtx));
+#else
     romStart = (u8*)((s32)imgfx_data_ROM_START + (s32) header->keyframesOffset + curKeyIdx * header->vtxCount * sizeof(ImgFXVtx));
     dma_copy(romStart, romStart + header->vtxCount * sizeof(ImgFXVtx), curKeyframe);
+#endif
     if (keyframeInterval > 1) {
         nextKeyframe = heap_malloc(header->vtxCount * sizeof(*nextKeyframe));
+#ifdef BUILD_PC
+        memcpy(nextKeyframe, header->keyframesOffset + nextKeyIdx * header->vtxCount,
+               header->vtxCount * sizeof(*nextKeyframe));
+#else
         romStart = (u8*)((s32)imgfx_data_ROM_START + (s32) header->keyframesOffset + nextKeyIdx * header->vtxCount * sizeof(ImgFXVtx));
         dma_copy(romStart, romStart + header->vtxCount * sizeof(ImgFXVtx), nextKeyframe);
+#endif
     }
 
     lerpAlpha = (f32) curSubframe / (f32) keyframeInterval;
