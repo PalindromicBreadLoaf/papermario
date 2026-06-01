@@ -196,10 +196,11 @@ static void pc_swap_sef_file(void *buffer, u32 size) {
     section2000 = pc_read_be16(data + 0x20);
     *(u16 *)(data + 0x20) = section2000;
 
-    for (u32 i = 0; i < 8; i++) {
-        pc_swap_sef_table(data, size, sections[i], i < 4 ? 0xC0 : 0x40);
+    for (u32 i = 0; i < 4; i++) {
+        pc_swap_sef_table(data, size, sections[i], 0xC0);
     }
-    pc_swap_sef_table(data, size, section2000, 0x140);
+    // Sections 4-7 and section2000 are compact embedded SEF byte streams,
+    // not u16 offset/info tables. Leave them in ROM byte order.
 }
 
 static void pc_swap_per_prg_header(void *buffer, u32 size) {
@@ -294,10 +295,7 @@ static u32 pc_normalize_rom_addr(u32 rom_addr) {
 }
 
 // Walks a BGM file's composition stream starting at byte offset `comp_off`,
-// swapping each u32 command in place until it hits BGM_COMP_END (0). For
-// BGM_COMP_PLAY_PHRASE commands, records the referenced phrase-table offset
-// so phrase u32s can be swapped exactly once afterward. Returns the number
-// of new phrase offsets appended to `phrase_offs[]`.
+// swapping each u32 command in place until it hits BGM_COMP_END (0)
 static u32 pc_swap_bgm_composition(u8 *data, u32 size, u32 comp_off,
                                    u32 *phrase_offs, u32 phrase_count, u32 phrase_cap) {
     u32 off = comp_off;
@@ -348,7 +346,6 @@ static void pc_swap_bgm_file(void *buffer, u32 size) {
     *(u32 *)(data + 0x08) = pc_bswap32(*(u32 *)(data + 0x08));
     pc_swap_u16_range(data + 0x14, 0x10);
 
-    // Drum info: BGMDrumInfo[drums_count], each 12 bytes with 2 u16s at the start.
     if (drums_off != 0 && drums_count != 0) {
         u32 base = (u32)drums_off * 4;
         for (u32 i = 0; i < drums_count; i++) {
@@ -359,7 +356,6 @@ static void pc_swap_bgm_file(void *buffer, u32 size) {
         }
     }
 
-    // Instrument info: BGMInstrumentInfo[instr_count], each 8 bytes with 1 u16 at the start.
     if (instr_off != 0 && instr_count != 0) {
         u32 base = (u32)instr_off * 4;
         for (u32 i = 0; i < instr_count; i++) {
@@ -380,7 +376,6 @@ static void pc_swap_bgm_file(void *buffer, u32 size) {
                                                phrase_offs, phrase_count, 256);
     }
 
-    // Phrase tables are 16 u32 track entries each.
     for (u32 i = 0; i < phrase_count; i++) {
         u32 off = phrase_offs[i];
         for (u32 t = 0; t < 16; t++) {
@@ -392,28 +387,25 @@ static void pc_swap_bgm_file(void *buffer, u32 size) {
     }
 }
 
-// When a chunk-1 "BGM " header is seen we eagerly DMA the rest of the file into the
-// same buffer, swap it as a whole, and remember the ROM range so the audio engine's follow-up
-// chunked reads short-circuit instead of clobbering swapped data.
-#define PC_BGM_PRELOAD_SLOTS 8
+#define PC_AUDIO_PRELOAD_SLOTS 8
 typedef struct {
     u32 rom_start;
     u32 rom_end;
     bool active;
-} PcBgmPreload;
+} PcAudioPreload;
 
-static PcBgmPreload sBgmPreloads[PC_BGM_PRELOAD_SLOTS];
+static PcAudioPreload sAudioPreloads[PC_AUDIO_PRELOAD_SLOTS];
 
-static bool pc_bgm_preload_contains(u32 rom_addr, u32 size, u32 *out_skip_size) {
-    for (u32 i = 0; i < PC_BGM_PRELOAD_SLOTS; i++) {
-        if (!sBgmPreloads[i].active) {
+static bool pc_audio_preload_contains(u32 rom_addr, u32 size, u32 *out_skip_size) {
+    for (u32 i = 0; i < PC_AUDIO_PRELOAD_SLOTS; i++) {
+        if (!sAudioPreloads[i].active) {
             continue;
         }
-        if (rom_addr >= sBgmPreloads[i].rom_start && rom_addr < sBgmPreloads[i].rom_end) {
-            u32 avail = sBgmPreloads[i].rom_end - rom_addr;
+        if (rom_addr >= sAudioPreloads[i].rom_start && rom_addr < sAudioPreloads[i].rom_end) {
+            u32 avail = sAudioPreloads[i].rom_end - rom_addr;
             *out_skip_size = size <= avail ? size : avail;
-            if (rom_addr + size >= sBgmPreloads[i].rom_end) {
-                sBgmPreloads[i].active = false;
+            if (rom_addr + size >= sAudioPreloads[i].rom_end) {
+                sAudioPreloads[i].active = false;
             }
             return true;
         }
@@ -421,39 +413,58 @@ static bool pc_bgm_preload_contains(u32 rom_addr, u32 size, u32 *out_skip_size) 
     return false;
 }
 
-static void pc_bgm_preload_register(u32 rom_start, u32 rom_end) {
-    for (u32 i = 0; i < PC_BGM_PRELOAD_SLOTS; i++) {
-        if (!sBgmPreloads[i].active) {
-            sBgmPreloads[i].rom_start = rom_start;
-            sBgmPreloads[i].rom_end = rom_end;
-            sBgmPreloads[i].active = true;
+static void pc_audio_preload_register(u32 rom_start, u32 rom_end) {
+    for (u32 i = 0; i < PC_AUDIO_PRELOAD_SLOTS; i++) {
+        if (!sAudioPreloads[i].active) {
+            sAudioPreloads[i].rom_start = rom_start;
+            sAudioPreloads[i].rom_end = rom_end;
+            sAudioPreloads[i].active = true;
             return;
         }
     }
     // Out of slots, so overwrite the oldest entry. We shouldn't hit this in practice.
-    sBgmPreloads[0].rom_start = rom_start;
-    sBgmPreloads[0].rom_end = rom_end;
-    sBgmPreloads[0].active = true;
+    sAudioPreloads[0].rom_start = rom_start;
+    sAudioPreloads[0].rom_end = rom_end;
+    sAudioPreloads[0].active = true;
 }
 
-static void pc_try_preload_bgm(u32 rom_addr, void *buffer, u32 size) {
+static u32 pc_try_preload_bgm(u32 rom_addr, void *buffer, u32 size) {
     u8 *data = buffer;
 
     if (size < 0x24) {
-        return;
+        return size;
     }
     if (data[0] != 'B' || data[1] != 'G' || data[2] != 'M' || data[3] != ' ') {
-        return;
+        return size;
     }
 
     u32 file_size = pc_read_be32(data + 0x04);
     if (file_size <= size || file_size > 0x100000u) {
-        return;
+        return size;
     }
 
     u32 remaining = file_size - size;
     asset_loader_dma_read(rom_addr + size, data + size, remaining);
-    pc_bgm_preload_register(rom_addr, rom_addr + file_size);
+    pc_audio_preload_register(rom_addr, rom_addr + file_size);
+    return file_size;
+}
+
+static u32 pc_try_preload_sef(u32 rom_addr, void *buffer, u32 size) {
+    u8 *data = buffer;
+
+    if (size < 0x22 || memcmp(data, "SEF ", 4) != 0) {
+        return size;
+    }
+
+    u32 file_size = pc_read_be32(data + 0x04);
+    if (file_size <= size || file_size > 0x10000u) {
+        return size;
+    }
+
+    u32 remaining = file_size - size;
+    asset_loader_dma_read(rom_addr + size, data + size, remaining);
+    pc_audio_preload_register(rom_addr, rom_addr + file_size);
+    return file_size;
 }
 
 static void pc_swap_audio_metadata(u32 rom_addr, void *buffer, u32 size) {
@@ -461,26 +472,19 @@ static void pc_swap_audio_metadata(u32 rom_addr, void *buffer, u32 size) {
         return;
     }
 
-    pc_try_preload_bgm(rom_addr, buffer, size);
+    u32 bgm_swap_size = pc_try_preload_bgm(rom_addr, buffer, size);
+    u32 sef_swap_size = pc_try_preload_sef(rom_addr, buffer, size);
 
     pc_swap_sbn_header(rom_addr, buffer, size);
     pc_swap_init_header(rom_addr, buffer, size);
     pc_swap_bk_header(buffer, size);
-    pc_swap_sef_file(buffer, size);
+    pc_swap_sef_file(buffer, sef_swap_size);
     pc_swap_per_prg_header(buffer, size);
 
     // pc_swap_bgm_file walks the BGM body using header offsets. After
     // pc_try_preload_bgm has filled the entire file into `buffer`, swap across
     // the full file size, not just the requested chunk, so drum/instrument/
     // composition/phrase data past the first chunk gets byte-swapped too.
-    u32 bgm_swap_size = size;
-    if (size >= 0x24 && ((u8 *)buffer)[0] == 'B' && ((u8 *)buffer)[1] == 'G'
-            && ((u8 *)buffer)[2] == 'M' && ((u8 *)buffer)[3] == ' ') {
-        u32 file_size = pc_read_be32((const u8 *)buffer + 0x04);
-        if (file_size > size && file_size <= 0x100000u) {
-            bgm_swap_size = file_size;
-        }
-    }
     pc_swap_bgm_file(buffer, bgm_swap_size);
 
     if (pc_range_contains(sAudioFileListStart, sAudioFileListEnd, rom_addr, size)) {
@@ -554,10 +558,8 @@ void nuPiReadRom(u32 rom_addr, void *buf_ptr, u32 size) {
 
     rom_addr = pc_normalize_rom_addr(rom_addr);
 
-    // If this read falls inside a BGM file we already fetched and swapped on
-    // the first chunk, the buffer already holds the correct swapped data
     u32 skip = 0;
-    if (pc_bgm_preload_contains(rom_addr, size, &skip)) {
+    if (pc_audio_preload_contains(rom_addr, size, &skip)) {
         if (skip >= size) {
             return;
         }
