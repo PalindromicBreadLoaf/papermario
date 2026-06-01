@@ -26,6 +26,20 @@ typedef struct {
 
 static TexCacheEntry s_cache[TEX_CACHE_SLOTS];
 static volatile bool s_cache_invalidated;
+static int s_debug_logging = -1;
+
+static bool texture_cache_debug_enabled(void) {
+    if (s_debug_logging < 0) {
+        const char *env = getenv("PM_TEXCACHE_DEBUG");
+        s_debug_logging = (env != NULL && env[0] != '\0' && env[0] != '0') ? 1 : 0;
+    }
+    return s_debug_logging != 0;
+}
+
+#define TEXCACHE_DEBUG_LOG(...) \
+    do { \
+        if (texture_cache_debug_enabled()) fprintf(stderr, __VA_ARGS__); \
+    } while (0)
 
 void texture_cache_init(void) {
     memset(s_cache, 0, sizeof(s_cache));
@@ -114,35 +128,30 @@ unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
     }
 
     if (!addr || !size_bytes || !width || !height) {
-        fprintf(stderr,
-                "[texcache] reject zero-arg addr=%p size=%u w=%u h=%u fmt=%u siz=%u\n",
-                (const void *)addr, size_bytes, (unsigned)width, (unsigned)height,
-                (unsigned)fmt, (unsigned)siz);
+        TEXCACHE_DEBUG_LOG("[texcache] reject zero-arg addr=%p size=%u w=%u h=%u fmt=%u siz=%u\n",
+                           (const void *)addr, size_bytes, (unsigned)width, (unsigned)height,
+                           (unsigned)fmt, (unsigned)siz);
         return 0;
     }
     u32 row_bytes = tex_row_bytes(siz, width);
     if (!row_bytes) {
-        fprintf(stderr, "[texcache] reject row_bytes=0 siz=%u w=%u\n",
-                (unsigned)siz, (unsigned)width);
+        TEXCACHE_DEBUG_LOG("[texcache] reject row_bytes=0 siz=%u w=%u\n", (unsigned)siz, (unsigned)width);
         return 0;
     }
     if (stride_bytes == 0) {
         stride_bytes = row_bytes;
     }
     if (stride_bytes < row_bytes) {
-        fprintf(stderr, "[texcache] reject stride<row stride=%u row=%u\n",
-                stride_bytes, row_bytes);
+        TEXCACHE_DEBUG_LOG("[texcache] reject stride<row stride=%u row=%u\n", stride_bytes, row_bytes);
         return 0;
     }
     u32 packed_bytes = row_bytes * (u32)height;
     if (size_bytes < packed_bytes) {
-        // Upload the rows present; wrap/clamp handles over-sampling like the RDP.
         u16 actual_h = (u16)(size_bytes / row_bytes);
         if (actual_h == 0) {
-            fprintf(stderr,
-                    "[texcache] reject size<row size=%u row=%u w=%u h=%u fmt=%u siz=%u\n",
-                    size_bytes, row_bytes, (unsigned)width, (unsigned)height,
-                    (unsigned)fmt, (unsigned)siz);
+            TEXCACHE_DEBUG_LOG("[texcache] reject size<row size=%u row=%u w=%u h=%u fmt=%u siz=%u\n",
+                               size_bytes, row_bytes, (unsigned)width, (unsigned)height,
+                               (unsigned)fmt, (unsigned)siz);
             return 0;
         }
         height = actual_h;
@@ -150,20 +159,17 @@ unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
     }
     u32 footprint = row_bytes + ((u32)height - 1u) * stride_bytes;
     if (!ptr_range_readable(addr, footprint)) {
-        fprintf(stderr,
-                "[texcache] reject addr-unreadable addr=%p footprint=%u w=%u h=%u fmt=%u siz=%u\n",
-                (const void *)addr, footprint, (unsigned)width, (unsigned)height,
-                (unsigned)fmt, (unsigned)siz);
+        TEXCACHE_DEBUG_LOG("[texcache] reject addr-unreadable addr=%p footprint=%u w=%u h=%u fmt=%u siz=%u\n",
+                           (const void *)addr, footprint, (unsigned)width, (unsigned)height,
+                           (unsigned)fmt, (unsigned)siz);
         return 0;
     }
     if (fmt == G_IM_FMT_CI) {
         u32 tlut_bytes = siz == G_IM_SIZ_4b ? 0x20u : 0x200u;
 
         if (!ptr_range_readable(tlut, tlut_bytes)) {
-            fprintf(stderr,
-                    "[texcache] reject tlut-unreadable tlut=%p bytes=%u addr=%p siz=%u\n",
-                    (const void *)tlut, tlut_bytes, (const void *)addr,
-                    (unsigned)siz);
+            TEXCACHE_DEBUG_LOG("[texcache] reject tlut-unreadable tlut=%p bytes=%u addr=%p siz=%u\n",
+                               (const void *)tlut, tlut_bytes, (const void *)addr, (unsigned)siz);
             return 0;
         }
     }
@@ -216,10 +222,9 @@ unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
     }
 
     if (tex_conv_to_rgba8(fmt, siz, src, packed_bytes, tlut, buf) != TEX_CONV_OK) {
-        fprintf(stderr,
-                "[texcache] reject conv-fail fmt=%u siz=%u src=%p tlut=%p bytes=%u w=%u h=%u\n",
-                (unsigned)fmt, (unsigned)siz, (const void *)src, (const void *)tlut,
-                packed_bytes, (unsigned)width, (unsigned)height);
+        TEXCACHE_DEBUG_LOG("[texcache] reject conv-fail fmt=%u siz=%u src=%p tlut=%p bytes=%u w=%u h=%u\n",
+                           (unsigned)fmt, (unsigned)siz, (const void *)src, (const void *)tlut,
+                           packed_bytes, (unsigned)width, (unsigned)height);
         free(packed);
         free(buf);
         return 0;

@@ -401,7 +401,25 @@ static void *gfx_resolve_addr(uintptr_t addr) {
     return pc_resolve_physical_addr(resolved);
 }
 
-// Row-major 4x4 multiply.  res may alias a or b.
+// True when an address falls inside the collision (hit) heap.
+// Should never be true, but there was a crash related to this.
+static bool gfx_addr_in_collision_heap(uintptr_t addr) {
+    uintptr_t start = (uintptr_t)heap_collisionHead;
+
+    return addr >= start && addr < start + PC_COLLISION_HEAP_SIZE;
+}
+
+static bool gfx_dl_target_renderable(const void *target) {
+    if (target == NULL) {
+        return false;
+    }
+    if (gfx_addr_in_collision_heap((uintptr_t)target)) {
+        return false;
+    }
+    return gfx_ptr_range_readable(target, sizeof(u32) * 2);
+}
+
+// Row-major 4x4 multiply. res may alias a or b.
 static void gfx_matrix_mul(float res[4][4], const float a[4][4], const float b[4][4]) {
     float tmp[4][4];
     for (int i = 0; i < 4; i++) {
@@ -415,6 +433,13 @@ static void gfx_matrix_mul(float res[4][4], const float a[4][4], const float b[4
 
 static void gfx_sp_matrix(u8 params, const s32 *addr) {
     float matrix[4][4];
+
+    // The load reads 16 s32s (64 bytes), so bail if that range
+    // is not mapped rather than faulting.
+    if (!gfx_ptr_range_readable(addr, 16 * sizeof(s32))) {
+        return;
+    }
+
     for (int i = 0; i < 4; i++) {
         for (int j = 0; j < 4; j += 2) {
             s32 int_part  = addr[i * 2 + j / 2];
@@ -843,7 +868,6 @@ static void gfx_sp_tri1(u8 v0, u8 v1, u8 v2) {
     float linear_offset = ((g_rdp.other_mode_h & (3u << G_MDSFT_TEXTFILT)) == (u32)G_TF_POINT) ? 0.0f : 16.0f;
 
     // Build UVs per TMEM slot because TEXEL0 and TEXEL1 can use different tile origins.
-    // Use the tile span when upload data is missing.
     float inv_w[2], inv_h[2], uls_s105[2], ult_s105[2];
     for (int s = 0; s < 2; s++) {
         u8 t = g_rdp.loaded[s].tile < 8 ? g_rdp.loaded[s].tile : (u8)s;
@@ -953,6 +977,9 @@ static void gfx_sp_move_mem(const Gfx *cmd) {
 
     if (index == G_MV_VIEWPORT) {
         const Vp_t *vp = (const Vp_t *)data;
+        if (!gfx_ptr_range_readable(vp, sizeof(*vp))) {
+            return;
+        }
         float rx = (gl_window_width  > 0) ? (float)gl_window_width  / 320.0f : 2.0f;
         float ry = (gl_window_height > 0) ? (float)gl_window_height / 240.0f : 2.0f;
         float w  = 2.0f * vp->vscale[0] / 4.0f;
@@ -967,7 +994,7 @@ static void gfx_sp_move_mem(const Gfx *cmd) {
     } else if (index == G_MV_LIGHT) {
         // offset 0 and 24 are the lookat entries; lights start at offset 48.
         int slot = offset / 24 - 2;
-        if (slot >= 0 && slot <= GFX_MAX_LIGHTS) {
+        if (slot >= 0 && slot <= GFX_MAX_LIGHTS && gfx_ptr_range_readable(data, sizeof(Light_t))) {
             memcpy(&g_rsp.lights[slot], data, sizeof(Light_t));
             g_rsp.lights_dirty = true;
         }
@@ -1759,7 +1786,26 @@ void gbi_run_dl(Gfx *dl) {
                 if (target == NULL) {
                     target = gfx_resolve_addr((uintptr_t)cmd->words.w1);
                 }
-                if (C0(16, 8) == G_DL_PUSH && stack_depth < GFX_DL_STACK_DEPTH) {
+                bool is_push = (C0(16, 8) == G_DL_PUSH);
+
+                // A target that resolves into collision memory (or is otherwise
+                // unreadable) is a bad guest pointer, not geometry. Drop the
+                // call instead of walking non-command data into a crash: a PUSH
+                // continues past the gSPDisplayList, a branch (NOPUSH) ends the
+                // current list like an implicit gsSPEndDisplayList.
+                if (!gfx_dl_target_renderable(target)) {
+                    if (is_push) {
+                        cmd = (Gfx *)((u8 *)raw_cmd + stride);
+                        continue;
+                    }
+                    if (stack_depth == 0) return;
+                    raw_cmd = stack[--stack_depth];
+                    dl_origin = (stack_depth > 0) ? (Gfx *)call_target[stack_depth - 1] : dl;
+                    cmd = raw_cmd;
+                    continue;
+                }
+
+                if (is_push && stack_depth < GFX_DL_STACK_DEPTH) {
                     call_origin[stack_depth] = raw_cmd;
                     call_target[stack_depth] = (uintptr_t)cmd->words.w1;
                     stack[stack_depth++] = (Gfx *)((u8 *)raw_cmd + stride);
