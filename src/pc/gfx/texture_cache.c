@@ -24,6 +24,8 @@ typedef struct {
     u8        cmt;
     u8        masks;
     u8        maskt;
+    bool      linear_filter;
+    bool      alpha_edge_bleed;
     GLuint    tex_id;
 } TexCacheEntry;
 
@@ -75,7 +77,7 @@ static u32 hash_texture_rows(const u8 *data, u32 row_bytes, u32 stride_bytes, u1
 
 static unsigned int cache_hash(const u8 *addr, u8 fmt, u8 siz, u32 size_bytes, u32 stride_bytes,
                                 const u8 *tlut, u32 tlut_hash, u16 width, u16 height, u8 cms, u8 cmt,
-                                u8 masks, u8 maskt) {
+                                u8 masks, u8 maskt, bool linear_filter, bool alpha_edge_bleed) {
     uintptr_t h = (uintptr_t)addr * 2654435761u;
     h ^= (uintptr_t)tlut * 40503u;
     h ^= (uintptr_t)tlut_hash * 2654435761u;
@@ -85,7 +87,68 @@ static unsigned int cache_hash(const u8 *addr, u8 fmt, u8 siz, u32 size_bytes, u
          * 3266489917u;
     h ^= (uintptr_t)((u32)cms | ((u32)cmt << 8)) * 668265263u;
     h ^= (uintptr_t)((u32)masks | ((u32)maskt << 8)) * 2246822519u;
+    h ^= (uintptr_t)((linear_filter ? 1u : 0u) | (alpha_edge_bleed ? 2u : 0u)) * 3266489917u;
     return (unsigned int)(h & (TEX_CACHE_SLOTS - 1u));
+}
+
+static void bleed_transparent_edges(u8 *rgba, u16 width, u16 height) {
+    u32 texels = (u32)width * (u32)height;
+    u8 *src = (u8 *)malloc(texels * 4u);
+
+    if (src == NULL) {
+        return;
+    }
+
+    memcpy(src, rgba, texels * 4u);
+
+    for (u16 y = 0; y < height; y++) {
+        for (u16 x = 0; x < width; x++) {
+            u32 idx = ((u32)y * width + x) * 4u;
+            u32 r = 0;
+            u32 g = 0;
+            u32 b = 0;
+            u32 count = 0;
+
+            if (src[idx + 3] != 0) {
+                continue;
+            }
+
+            for (s32 dy = -1; dy <= 1; dy++) {
+                s32 ny = (s32)y + dy;
+
+                if (ny < 0 || ny >= height) {
+                    continue;
+                }
+
+                for (s32 dx = -1; dx <= 1; dx++) {
+                    s32 nx = (s32)x + dx;
+                    u32 nidx;
+
+                    if ((dx == 0 && dy == 0) || nx < 0 || nx >= width) {
+                        continue;
+                    }
+
+                    nidx = ((u32)ny * width + (u32)nx) * 4u;
+                    if (src[nidx + 3] == 0) {
+                        continue;
+                    }
+
+                    r += src[nidx + 0];
+                    g += src[nidx + 1];
+                    b += src[nidx + 2];
+                    count++;
+                }
+            }
+
+            if (count != 0) {
+                rgba[idx + 0] = (u8)(r / count);
+                rgba[idx + 1] = (u8)(g / count);
+                rgba[idx + 2] = (u8)(b / count);
+            }
+        }
+    }
+
+    free(src);
 }
 
 static GLenum wrap_mode(u8 flag, u8 mask) {
@@ -205,9 +268,11 @@ unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
         ? hash_bytes(tlut, siz == G_IM_SIZ_4b ? 0x20u : 0x200u)
         : 0u;
     u32 data_hash = hash_texture_rows(addr, row_bytes, stride_bytes, height);
+    bool linear_filter = ((g_rdp.other_mode_h & (3u << G_MDSFT_TEXTFILT)) != (u32)G_TF_POINT);
+    bool alpha_edge_bleed = linear_filter && ((g_rdp.other_mode_l & (CVG_X_ALPHA | FORCE_BL)) != 0);
 
     unsigned int idx = cache_hash(addr, fmt, siz, packed_bytes, stride_bytes, tlut, tlut_hash, width, height, cms, cmt,
-                                  masks, maskt);
+                                  masks, maskt, linear_filter, alpha_edge_bleed);
 
     unsigned int free_slot = TEX_CACHE_SLOTS;
     unsigned int replace_slot = TEX_CACHE_SLOTS;
@@ -225,7 +290,9 @@ unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
             e->tlut == tlut && e->tlut_hash == tlut_hash &&
             e->width == width && e->height == height &&
             e->cms == cms && e->cmt == cmt &&
-            e->masks == masks && e->maskt == maskt) {
+            e->masks == masks && e->maskt == maskt &&
+            e->linear_filter == linear_filter &&
+            e->alpha_edge_bleed == alpha_edge_bleed) {
             if (e->data_hash == data_hash) {
                 return e->tex_id;
             }
@@ -272,6 +339,10 @@ unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
         return 0;
     }
 
+    if (alpha_edge_bleed) {
+        bleed_transparent_edges(buf, width, height);
+    }
+
     GLuint tex;
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
@@ -283,8 +354,7 @@ unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, (GLint)wrap_mode(cms, masks));
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, (GLint)wrap_mode(cmt, maskt));
 
-    GLenum filter = ((g_rdp.other_mode_h & (3u << G_MDSFT_TEXTFILT)) == (u32)G_TF_POINT)
-                    ? GL_NEAREST : GL_LINEAR;
+    GLenum filter = linear_filter ? GL_LINEAR : GL_NEAREST;
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, (GLint)filter);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, (GLint)filter);
 
@@ -303,6 +373,8 @@ unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
     e->cmt        = cmt;
     e->masks      = masks;
     e->maskt      = maskt;
+    e->linear_filter = linear_filter;
+    e->alpha_edge_bleed = alpha_edge_bleed;
     e->tex_id     = tex;
 
     return tex;

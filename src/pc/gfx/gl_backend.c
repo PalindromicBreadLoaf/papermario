@@ -67,8 +67,13 @@ static const char *s_frag_src =
     "    color.a   = (ca_a - ca_b) * ca_c + ca_d;\n"
     "    if (u_use_fog != 0)\n"
     "        color.rgb = mix(color.rgb, u_fog_color.rgb, v_color.a);\n"
-    "    if (u_alpha_test != 0 && color.a <= 0.0)\n"
+    "    if (u_alpha_test == 1 && color.a <= 0.0)\n"
     "        discard;\n"
+    "    if (u_alpha_test == 2) {\n"
+    "        if (color.a < 0.5)\n"
+    "            discard;\n"
+    "        color.a = 1.0;\n"
+    "    }\n"
     "    frag_color = color;\n"
     "}\n";
 

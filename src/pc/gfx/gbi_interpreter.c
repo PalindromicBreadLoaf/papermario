@@ -679,10 +679,6 @@ static bool gfx_blender_cycle_passthrough(u32 oml, int cycle) {
 static bool gfx_uses_alpha_blend(u32 oml) {
     u32 cycle_type = g_rdp.other_mode_h & (3u << G_MDSFT_CYCLETYPE);
 
-    if ((oml & CVG_X_ALPHA) != 0) {
-        return true;
-    }
-
     if ((oml & FORCE_BL) == 0) {
         return false;
     }
@@ -713,12 +709,12 @@ static void gfx_apply_render_state(void) {
 
     bool use_alpha = gfx_uses_alpha_blend(oml);
 
-    // Match CVG_X_ALPHA-style cutouts even when render-mode bits do not expose it.
-    gfx_alpha_test = 1;
     if (use_alpha) {
+        gfx_alpha_test = 1;
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     } else {
+        gfx_alpha_test = (oml & CVG_X_ALPHA) ? 2 : 1;
         glDisable(GL_BLEND);
     }
 }
