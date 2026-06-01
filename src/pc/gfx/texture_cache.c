@@ -15,6 +15,7 @@ typedef struct {
     u8        siz;
     u32       size_bytes;
     u32       stride_bytes;
+    u32       data_hash;
     const u8 *tlut;
     u32       tlut_hash;
     u16       width;
@@ -54,6 +55,20 @@ static u32 hash_bytes(const u8 *data, u32 size) {
     for (u32 i = 0; i < size; i++) {
         hash ^= data[i];
         hash *= 16777619u;
+    }
+    return hash;
+}
+
+static u32 hash_texture_rows(const u8 *data, u32 row_bytes, u32 stride_bytes, u16 height) {
+    u32 hash = 2166136261u;
+
+    for (u16 y = 0; y < height; y++) {
+        const u8 *row = data + (u32)y * stride_bytes;
+
+        for (u32 x = 0; x < row_bytes; x++) {
+            hash ^= row[x];
+            hash *= 16777619u;
+        }
     }
     return hash;
 }
@@ -189,11 +204,13 @@ unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
     u32 tlut_hash = fmt == G_IM_FMT_CI
         ? hash_bytes(tlut, siz == G_IM_SIZ_4b ? 0x20u : 0x200u)
         : 0u;
+    u32 data_hash = hash_texture_rows(addr, row_bytes, stride_bytes, height);
 
     unsigned int idx = cache_hash(addr, fmt, siz, packed_bytes, stride_bytes, tlut, tlut_hash, width, height, cms, cmt,
                                   masks, maskt);
 
     unsigned int free_slot = TEX_CACHE_SLOTS;
+    unsigned int replace_slot = TEX_CACHE_SLOTS;
     for (unsigned int i = 0; i < TEX_CACHE_SLOTS; i++) {
         unsigned int slot = (idx + i) & (TEX_CACHE_SLOTS - 1u);
         TexCacheEntry *e = &s_cache[slot];
@@ -209,11 +226,19 @@ unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
             e->width == width && e->height == height &&
             e->cms == cms && e->cmt == cmt &&
             e->masks == masks && e->maskt == maskt) {
-            return e->tex_id;
+            if (e->data_hash == data_hash) {
+                return e->tex_id;
+            }
+            replace_slot = slot;
+            break;
         }
     }
 
-    if (free_slot == TEX_CACHE_SLOTS) {
+    if (replace_slot != TEX_CACHE_SLOTS) {
+        free_slot = replace_slot;
+        glDeleteTextures(1, &s_cache[free_slot].tex_id);
+        s_cache[free_slot].tex_id = 0;
+    } else if (free_slot == TEX_CACHE_SLOTS) {
         // Table full: evict at the home slot.
         free_slot = idx;
         glDeleteTextures(1, &s_cache[free_slot].tex_id);
@@ -269,6 +294,7 @@ unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
     e->siz        = siz;
     e->size_bytes = packed_bytes;
     e->stride_bytes = stride_bytes;
+    e->data_hash = data_hash;
     e->tlut       = tlut;
     e->tlut_hash  = tlut_hash;
     e->width      = width;
