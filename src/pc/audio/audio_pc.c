@@ -2,9 +2,20 @@
 #include <PR/ultratypes.h>
 #include "audio_pc.h"
 #include <stdio.h>
+#include <string.h>
 
 static SDL_AudioDeviceID sDevice;
 static u32               sFreq;
+
+#define PC_AUDIO_QUEUE_TARGET_FRAMES 2048
+
+static void audio_pc_queue_silence(int n_stereo_frames) {
+    if (!sDevice || n_stereo_frames <= 0) return;
+
+    s16 silence[PC_AUDIO_QUEUE_TARGET_FRAMES * 2];
+    memset(silence, 0, sizeof(silence));
+    SDL_QueueAudio(sDevice, silence, (u32)(n_stereo_frames * 2 * sizeof(s16)));
+}
 
 void audio_pc_init(void) {
     if (SDL_Init(SDL_INIT_AUDIO) != 0) {
@@ -34,6 +45,7 @@ u32 audio_pc_open_device(u32 freq) {
     }
 
     sFreq = (u32)have.freq;
+    audio_pc_queue_silence(PC_AUDIO_QUEUE_TARGET_FRAMES);
     SDL_PauseAudioDevice(sDevice, 0);
     return sFreq;
 }
@@ -41,9 +53,7 @@ u32 audio_pc_open_device(u32 freq) {
 void audio_pc_push_samples(const s16 *buf, int n_stereo_frames) {
     if (!sDevice || !buf || n_stereo_frames <= 0) return;
 
-    // Keep SDL's queue near two audio frames so nuAuMgr is paced by the
-    // device instead of running ahead and dropping already-advanced BGM frames.
-    const u32 target_bytes = (u32)(1200 * 2 * sizeof(s16));
+    const u32 target_bytes = (u32)(PC_AUDIO_QUEUE_TARGET_FRAMES * 2 * sizeof(s16));
     while (SDL_GetQueuedAudioSize(sDevice) > target_bytes) {
         SDL_Delay(1);
     }

@@ -6,8 +6,6 @@
 #include "vadpcm.h"
 
 // Platform-neutral description of one playback voice.
-// The game side fills in the top section when starting/updating a voice.
-// The mixer owns the bottom section; the game must not modify those fields.
 typedef struct {
     bool      is_playing;
     u8        wave_type;        // 0 = ADPCM (AL_ADPCM_WAVE), 1 = raw s16 (AL_RAW16_WAVE)
@@ -22,6 +20,11 @@ typedef struct {
     f32       pitch_ratio;      // input samples consumed per output sample (1.0 = natural)
     s16       vol_l;            // left  volume  0..0x7FFF
     s16       vol_r;            // right volume  0..0x7FFF
+    f32       cur_vol_l;
+    f32       cur_vol_r;
+    f32       vol_step_l;
+    f32       vol_step_r;
+    s32       vol_ramp_samples;
     s32       adpcm_state[16];  // inter-frame s32 predictor state
     f32       sample_frac;      // fractional input-sample position
     int       frame_cache_idx;  // which ADPCM frame is in frame_cache (-1 = none)
@@ -53,5 +56,8 @@ void pc_audio_frame(s16 *out_stereo, int n_samples);
 
 // Reset all mixer-owned fields of a voice (call when stopping a voice).
 void audio_mix_reset_voice(PcVoiceInfo *v);
+
+// Set a voice's target volume, optionally ramping from its current volume.
+void audio_mix_set_voice_volume(PcVoiceInfo *v, s16 vol_l, s16 vol_r, s32 ramp_samples);
 
 #endif /* PC_AUDIO_MIX_H */

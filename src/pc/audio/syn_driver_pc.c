@@ -77,16 +77,22 @@ static bool          sStereoEnabled = true;
 static bool          sUseGlobalVolume = false;
 static u16           sGlobalVolume = 0x7FFF;
 static volatile bool sAudioClientsReady = false;
+static double        sPcAudioSampleCarry;
+static u32           sPcAudioScheduleRate;
+static u32           sPcAudioScheduleRetraces;
+static u8            sPcAudioScheduleFrameRate;
 
 static PcAudioDriver sDriver;
 
 AuSynDriver *gActiveSynDriverPtr = NULL;
 AuSynDriver *gSynDriverPtr = NULL;
 
+extern s32 AlFrameSize;
+
 __attribute__((weak)) void au_update_clients_for_video_frame(void) {}
 __attribute__((weak)) void au_update_clients_for_audio_frame(void) {}
 
-static void compute_vol_lr(u8 voiceIdx) {
+static void compute_vol_lr(u8 voiceIdx, s32 delta) {
     SynVoiceState *st = &sVoiceState[voiceIdx];
     PcVoiceInfo   *v  = &sVoices[voiceIdx];
 
@@ -102,18 +108,23 @@ static void compute_vol_lr(u8 voiceIdx) {
     if (effective_vol > 0x7FFF) effective_vol = 0x7FFF;
 
     u16 ev16 = (u16)effective_vol;
+    s16 vol_l;
+    s16 vol_r;
 
     if (!sStereoEnabled) {
         s16 mono = (s16)(((u32)ev16 * sEqPower[EQ_MID]) >> 15);
-        v->vol_l = v->vol_r = mono;
+        vol_l = mono;
+        vol_r = mono;
     } else {
-        v->vol_l = (s16)(((u32)ev16 * sEqPower[st->pan])           >> 15);
-        v->vol_r = (s16)(((u32)ev16 * sEqPower[EQ_MAX - st->pan])  >> 15);
+        vol_l = (s16)(((u32)ev16 * sEqPower[st->pan])          >> 15);
+        vol_r = (s16)(((u32)ev16 * sEqPower[EQ_MAX - st->pan]) >> 15);
     }
+
+    audio_mix_set_voice_volume(v, vol_l, vol_r, delta);
 }
 
-// PM_AUDIO_OFF=1 skips engine client updates while the PC audio path is being
-// repaired, which lets the rest of the port run after audio-thread crashes.
+// PM_AUDIO_OFF=1 disables in-game audio.
+// This was originally for debugging, but I think I'll just keep it around.
 static int pc_audio_engine_disabled(void) {
     static int cached = -1;
     if (cached < 0) {
@@ -137,8 +148,55 @@ static void syn_pre_audio_frame(void) {
     au_update_clients_for_audio_frame();
 }
 
+static s32 pc_syn_next_frame_samples(s32 outLen) {
+    u32 outputRate = audio_pc_get_freq();
+    u32 retraces = nusched.retraceCount != 0 ? nusched.retraceCount : 1;
+    u8 frameRate = nusched.frameRate != 0 ? nusched.frameRate : VIDEO_FRAMES_PER_SECOND;
+
+    if (outputRate == 0 && gActiveSynDriverPtr != NULL && gActiveSynDriverPtr->outputRate > 0) {
+        outputRate = (u32)gActiveSynDriverPtr->outputRate;
+    }
+    if (outputRate == 0) {
+        outputRate = HARDWARE_OUTPUT_RATE;
+    }
+
+    if (sPcAudioScheduleRate != outputRate
+            || sPcAudioScheduleRetraces != retraces
+            || sPcAudioScheduleFrameRate != frameRate) {
+        sPcAudioSampleCarry = 0.0;
+        sPcAudioScheduleRate = outputRate;
+        sPcAudioScheduleRetraces = retraces;
+        sPcAudioScheduleFrameRate = frameRate;
+    }
+
+    sPcAudioSampleCarry += ((double)outputRate * (double)retraces) / (double)frameRate;
+
+    s32 blocks = (s32)((sPcAudioSampleCarry + (double)PC_AUDIO_SAMPLES * 0.5) / (double)PC_AUDIO_SAMPLES);
+    if (blocks < 1) {
+        blocks = 1;
+    }
+
+    s32 maxSamples = AlFrameSize > 0 ? AlFrameSize : outLen;
+    if (maxSamples < PC_AUDIO_SAMPLES) {
+        maxSamples = PC_AUDIO_SAMPLES;
+    }
+
+    s32 maxBlocks = maxSamples / PC_AUDIO_SAMPLES;
+    if (blocks > maxBlocks) {
+        blocks = maxBlocks;
+    }
+
+    s32 samples = blocks * PC_AUDIO_SAMPLES;
+    sPcAudioSampleCarry -= (double)samples;
+    return samples;
+}
+
 void pc_syn_init(void) {
     sAudioClientsReady = false;
+    sPcAudioSampleCarry = 0.0;
+    sPcAudioScheduleRate = 0;
+    sPcAudioScheduleRetraces = 0;
+    sPcAudioScheduleFrameRate = 0;
 
     for (int i = 0; i < PC_SYN_N_VOICES; i++) {
         sVoices[i].frame_cache_idx = -1;
@@ -171,19 +229,20 @@ Acmd *alAudioFrame(Acmd *cmdList, s32 *cmdLen, s16 *outBuf, s32 outLen) {
         return cmdList;
     }
 
+    s32 renderLen = pc_syn_next_frame_samples(outLen);
     if (!sAudioClientsReady) {
-        memset(outBuf, 0, (size_t)outLen * 2 * sizeof(s16));
+        memset(outBuf, 0, (size_t)renderLen * 2 * sizeof(s16));
     } else {
-        pc_audio_frame(outBuf, outLen);
+        pc_audio_frame(outBuf, renderLen);
     }
 
-    audio_pc_push_samples(outBuf, outLen);
+    audio_pc_push_samples(outBuf, renderLen);
     return cmdList;
 }
 
 void au_pvoice_set_bus(u8 voiceIdx, s8 busID) {
     sVoiceState[voiceIdx].bus = busID;
-    compute_vol_lr(voiceIdx);
+    compute_vol_lr(voiceIdx, 0);
 }
 
 void au_syn_start_voice(u8 voiceIdx) {
@@ -199,7 +258,6 @@ void au_syn_stop_voice(u8 voiceIdx) {
 void au_syn_start_voice_params(u8 voiceIdx, u8 busID, Instrument *instrument,
                                f32 pitchRatio, s16 vol, u8 pan, u8 fxMix, s32 delta) {
     (void)fxMix;  // TODO: reverb
-    (void)delta;  // TODO: volume ramping
 
     PcVoiceInfo  *v  = &sVoices[voiceIdx];
     SynVoiceState *st = &sVoiceState[voiceIdx];
@@ -247,9 +305,8 @@ void au_syn_start_voice_params(u8 voiceIdx, u8 busID, Instrument *instrument,
     st->pan    = pan;
     st->volume = (u16)((u32)vol * vol >> 15);
 
-    compute_vol_lr(voiceIdx);
-
     v->is_playing = true;
+    compute_vol_lr(voiceIdx, delta);
 }
 
 void au_syn_set_wavetable(u8 voiceIdx, Instrument *instrument) {
@@ -283,6 +340,8 @@ void au_syn_set_wavetable(u8 voiceIdx, Instrument *instrument) {
             v->loop_start = v->loop_end = v->loop_rem = 0;
         }
     }
+
+    compute_vol_lr(voiceIdx, 0);
 }
 
 void au_syn_set_pitch(u8 voiceIdx, f32 pitch) {
@@ -291,28 +350,26 @@ void au_syn_set_pitch(u8 voiceIdx, f32 pitch) {
 
 void au_syn_set_mixer_params(u8 voiceIdx, s16 volume, s32 delta, u8 pan, u8 fxMix) {
     (void)fxMix;
-    (void)delta;
     SynVoiceState *st = &sVoiceState[voiceIdx];
     st->pan    = pan;
     st->volume = (u16)((u32)volume * volume >> 15);
-    compute_vol_lr(voiceIdx);
+    compute_vol_lr(voiceIdx, delta);
 }
 
 void au_syn_set_pan_fxmix(u8 voiceIdx, u8 pan, u8 fxMix) {
     (void)fxMix;
     sVoiceState[voiceIdx].pan = pan;
-    compute_vol_lr(voiceIdx);
+    compute_vol_lr(voiceIdx, 0);
 }
 
 void au_syn_set_volume_delta(u8 voiceIdx, s16 vol, s32 delta) {
-    (void)delta;
     sVoiceState[voiceIdx].volume = (u16)((u32)vol * vol >> 15);
-    compute_vol_lr(voiceIdx);
+    compute_vol_lr(voiceIdx, delta);
 }
 
 void au_syn_set_pan(u8 voiceIdx, u8 pan) {
     sVoiceState[voiceIdx].pan = pan;
-    compute_vol_lr(voiceIdx);
+    compute_vol_lr(voiceIdx, 0);
 }
 
 void au_syn_set_fxmix(u8 voiceIdx, u8 fxMix) {
@@ -360,7 +417,7 @@ void au_bus_set_volume(u8 busID, u16 value) {
         sBusGain[busID] = value & 0x7FFF;
         // Recompute volumes for all voices on this bus.
         for (int i = 0; i < PC_SYN_N_VOICES; i++) {
-            if (sVoiceState[i].bus == (s8)busID) compute_vol_lr(i);
+            if (sVoiceState[i].bus == (s8)busID) compute_vol_lr(i, 0);
         }
     }
 }
@@ -381,7 +438,7 @@ void au_bus_set_fx_params(u8 busID, s16 delayIndex, s16 paramID, s32 value) {
 
 void au_set_stereo_enabled(s8 enabled) {
     sStereoEnabled = (enabled != 0);
-    for (int i = 0; i < PC_SYN_N_VOICES; i++) compute_vol_lr(i);
+    for (int i = 0; i < PC_SYN_N_VOICES; i++) compute_vol_lr(i, 0);
 }
 
 void au_use_global_volume(void) {
@@ -390,7 +447,7 @@ void au_use_global_volume(void) {
 
 void au_set_global_volume(s16 volume) {
     sGlobalVolume = (u16)volume;
-    for (int i = 0; i < PC_SYN_N_VOICES; i++) compute_vol_lr(i);
+    for (int i = 0; i < PC_SYN_N_VOICES; i++) compute_vol_lr(i, 0);
 }
 
 s16 au_get_global_volume(void) {

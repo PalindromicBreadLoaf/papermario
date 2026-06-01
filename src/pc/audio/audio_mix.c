@@ -117,6 +117,60 @@ void audio_mix_reset_voice(PcVoiceInfo *v) {
     v->sample_frac    = 0.0f;
     v->frame_cache_idx = -1;
     v->loop_rem       = 0;
+    v->vol_l          = 0;
+    v->vol_r          = 0;
+    v->cur_vol_l      = 0.0f;
+    v->cur_vol_r      = 0.0f;
+    v->vol_step_l     = 0.0f;
+    v->vol_step_r     = 0.0f;
+    v->vol_ramp_samples = 0;
+}
+
+void audio_mix_set_voice_volume(PcVoiceInfo *v, s16 vol_l, s16 vol_r, s32 ramp_samples) {
+    v->vol_l = vol_l;
+    v->vol_r = vol_r;
+
+    if (!v->is_playing || ramp_samples <= 0) {
+        v->cur_vol_l = (f32)vol_l;
+        v->cur_vol_r = (f32)vol_r;
+        v->vol_step_l = 0.0f;
+        v->vol_step_r = 0.0f;
+        v->vol_ramp_samples = 0;
+        return;
+    }
+
+    v->vol_step_l = ((f32)vol_l - v->cur_vol_l) / (f32)ramp_samples;
+    v->vol_step_r = ((f32)vol_r - v->cur_vol_r) / (f32)ramp_samples;
+    v->vol_ramp_samples = ramp_samples;
+}
+
+static inline void advance_voice_volume(PcVoiceInfo *v) {
+    if (v->vol_ramp_samples <= 0) {
+        return;
+    }
+
+    v->cur_vol_l += v->vol_step_l;
+    v->cur_vol_r += v->vol_step_r;
+    v->vol_ramp_samples--;
+
+    if (v->vol_ramp_samples == 0) {
+        v->cur_vol_l = (f32)v->vol_l;
+        v->cur_vol_r = (f32)v->vol_r;
+        v->vol_step_l = 0.0f;
+        v->vol_step_r = 0.0f;
+    }
+}
+
+static bool decode_next_adpcm_frame_preview(PcVoiceInfo *v, int frame_idx, int max_frame, s16 out[16]) {
+    if (frame_idx < 0 || frame_idx >= max_frame) {
+        return false;
+    }
+
+    s32 state[16];
+    memcpy(state, v->adpcm_state, sizeof(state));
+    const u8 *fp = v->wav_data + (size_t)frame_idx * VADPCM_BYTES_PER_FRAME;
+    vadpcm_decode_frame(fp, v->book, state, out);
+    return true;
 }
 
 static void mix_voice(PcVoiceInfo *v, s32 *acc_l, s32 *acc_r, int n) {
@@ -175,9 +229,11 @@ static void mix_voice(PcVoiceInfo *v, s32 *acc_l, s32 *acc_r, int n) {
 
         if (in_pos >= wav_samples) { v->is_playing = false; break; }
 
-        s16 sample;
+        s32 sample;
+        f32 frac = v->sample_frac - (f32)in_pos;
         if (v->wave_type == 0) {
             int frame_idx = in_pos / VADPCM_SAMPLES_PER_FRAME;
+            int frame_off = in_pos % VADPCM_SAMPLES_PER_FRAME;
             // Decode frames sequentially up to the needed frame.
             int max_frame = (int)(v->wav_data_len / VADPCM_BYTES_PER_FRAME);
             if (frame_idx >= max_frame) {
@@ -193,15 +249,43 @@ static void mix_voice(PcVoiceInfo *v, s32 *acc_l, s32 *acc_r, int n) {
                 const u8 *fp = v->wav_data + (size_t)v->frame_cache_idx * VADPCM_BYTES_PER_FRAME;
                 vadpcm_decode_frame(fp, v->book, v->adpcm_state, v->frame_cache);
             }
-            sample = v->frame_cache[in_pos % VADPCM_SAMPLES_PER_FRAME];
+            sample = v->frame_cache[frame_off];
+            if (frac > 0.0f) {
+                int interp_limit = (v->loop_end > 0) ? v->loop_end : wav_samples;
+                if (in_pos + 1 < interp_limit) {
+                    s32 next;
+                    bool have_next = true;
+
+                    if (frame_off + 1 < VADPCM_SAMPLES_PER_FRAME) {
+                        next = v->frame_cache[frame_off + 1];
+                    } else {
+                        s16 next_frame[16];
+                        have_next = decode_next_adpcm_frame_preview(v, frame_idx + 1, max_frame, next_frame);
+                        next = have_next ? next_frame[0] : 0;
+                    }
+
+                    if (have_next) {
+                        sample += (s32)((next - sample) * frac);
+                    }
+                }
+            }
         } else {
             // Raw s16 in ROM byte order (big-endian); swap on little-endian hosts.
             const u8 *p = v->wav_data + (size_t)in_pos * 2;
             sample = (s16)(((u16)p[0] << 8) | p[1]);
+            if (frac > 0.0f) {
+                int interp_limit = (v->loop_end > 0) ? v->loop_end : wav_samples;
+                if (in_pos + 1 < interp_limit) {
+                    p = v->wav_data + (size_t)(in_pos + 1) * 2;
+                    s32 next = (s16)(((u16)p[0] << 8) | p[1]);
+                    sample += (s32)((next - sample) * frac);
+                }
+            }
         }
 
-        acc_l[i] += ((s32)sample * (s32)v->vol_l) >> 15;
-        acc_r[i] += ((s32)sample * (s32)v->vol_r) >> 15;
+        acc_l[i] += (sample * (s32)v->cur_vol_l) >> 15;
+        acc_r[i] += (sample * (s32)v->cur_vol_r) >> 15;
+        advance_voice_volume(v);
         v->sample_frac += v->pitch_ratio;
     }
 }
