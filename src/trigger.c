@@ -72,7 +72,15 @@ Trigger* create_trigger(TriggerBlueprint* bp) {
 
     trigger->flags = bp->flags | TRIGGER_ACTIVE;
     trigger->varIndex = bp->varIndex;
+#ifdef BUILD_PC
+    if (bp->flags & TRIGGER_POINT_BOMB) {
+        trigger->location.blast = (BombTrigger*)(uintptr_t)(u32)bp->colliderID;
+    } else {
+        trigger->location.colliderID = bp->colliderID;
+    }
+#else
     trigger->location.colliderID = bp->colliderID;
+#endif
     trigger->itemList = bp->itemList;
     trigger->tattleMsg = bp->tattleMsg;
     trigger->hasPlayerInteractPrompt = bp->hasPlayerInteractPrompt;

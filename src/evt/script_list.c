@@ -473,8 +473,11 @@ Evt* func_802C39F8(Evt* parentScript, Bytecode* nextLine, s32 newState) {
     child->childScript = nullptr;
     child->priority = parentScript->priority;
     child->id = UniqueScriptCounter++;
-    child->owner1.actorID = parentScript->owner1.actorID;
-    child->owner2.npcID = parentScript->owner2.npcID;
+    // Copy the full owner unions (8-byte enemy/npc pointers on a 64-bit host),
+    // not just the low 4-byte .actorID/.npcID members, which would leave the high
+    // bits of the inherited owner pointers as stale heap garbage
+    child->owner1 = parentScript->owner1;
+    child->owner2 = parentScript->owner2;
     child->loopDepth = -1;
     child->switchDepth = -1;
     child->groupFlags = parentScript->groupFlags;

@@ -1180,8 +1180,9 @@ ApiStatus evt_handle_thread(Evt* script) {
 
     script->ptrNextLine = endLine;
     newScript = start_script_in_group((EvtScript*)startLine, script->priority, EVT_FLAG_RUN_IMMEDIATELY | EVT_FLAG_THREAD, script->groupFlags);
-    newScript->owner1.enemyID = script->owner1.enemyID;
-    newScript->owner2.npcID = script->owner2.npcID;
+    // Copy the whole owner unions, not just the .enemyID/.npcID members
+    newScript->owner1 = script->owner1;
+    newScript->owner2 = script->owner2;
     newScript->array = script->array;
     newScript->flagArray = script->flagArray;
 
@@ -1217,8 +1218,8 @@ ApiStatus evt_handle_child_thread(Evt* script) {
 
     script->ptrNextLine = endLine;
     newScript = func_802C39F8(script, startLine, EVT_FLAG_RUN_IMMEDIATELY | EVT_FLAG_THREAD);
-    newScript->owner1.enemyID = script->owner1.enemyID;
-    newScript->owner2.npcID = script->owner2.npcID;
+    newScript->owner1 = script->owner1;
+    newScript->owner2 = script->owner2;
     newScript->groupFlags = script->groupFlags;
     newScript->array = script->array;
     newScript->flagArray = script->flagArray;
