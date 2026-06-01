@@ -21,22 +21,23 @@ void nuScEventBroadcast(NUScMsg *msg) {
 }
 
 // Scale retrace timing by nusched.retraceCount so audio buffer sizing matches
-// the game-visible retrace cadence.
+// the game retrace cadence.
 static int retrace_thread_func(void *arg) {
     (void)arg;
-    u32 period_ms = (nusched.frameRate == 50) ? 20 : 16;
-    if (nusched.retraceCount > 1) {
-        period_ms *= nusched.retraceCount;
-    }
-    Uint32 next = SDL_GetTicks() + period_ms;
+    Uint64 perf_freq = SDL_GetPerformanceFrequency();
+    Uint64 period = (perf_freq * nusched.retraceCount + (nusched.frameRate / 2)) / nusched.frameRate;
+    Uint64 next = SDL_GetPerformanceCounter() + period;
+
     while (!SDL_AtomicGet(&sRetraceQuit)) {
-        Uint32 now = SDL_GetTicks();
-        if ((Sint32)(now - next) >= 0) {
-            next += period_ms;
+        Uint64 now = SDL_GetPerformanceCounter();
+
+        if (now >= next) {
+            next += period;
             nuScRetraceCounter++;
             nuScEventBroadcast(&nusched.retraceMsg);
         } else {
-            SDL_Delay(1);
+            Uint64 remaining_ms = ((next - now) * 1000) / perf_freq;
+            SDL_Delay((remaining_ms > 1) ? (Uint32)(remaining_ms - 1) : 0);
         }
     }
     return 0;
