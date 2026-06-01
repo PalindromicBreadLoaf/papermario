@@ -18,10 +18,17 @@ void* D_8010C924;
 s32 D_8010C92C;
 s32 D_8010C964;
 s32 gSpinHistoryBufferPos;
+#ifdef BUILD_PC
+s32 gSpinHistoryPosY[6];
+s32 gSpinHistoryPosX[6];
+s32 gSpinHistoryPosZ[6];
+s16 gSpinHistoryPosAngle[6];
+#else
 s32 gSpinHistoryPosY[5];
 s32 gSpinHistoryPosX[5];
 s32 gSpinHistoryPosZ[5];
 s16 gSpinHistoryPosAngle[5];
+#endif
 
 BSS s16 D_8010C9B0;
 

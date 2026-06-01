@@ -16,6 +16,22 @@ typedef struct ModelBoundingBox {
     /* 0x04 */ s32 halfSizeX;
     /* 0x08 */ f32 minX;
     /* 0x0C */ char unk_0C[0x04];
+#ifdef BUILD_PC
+    /* 0x10 */ char unk_10[0x04];
+    /* 0x14 */ s32 halfSizeY;
+    /* 0x18 */ f32 minY;
+    /* 0x1C */ char unk_1C[0x04];
+    /* 0x20 */ char unk_20[0x04];
+    /* 0x24 */ s32 halfSizeZ;
+    /* 0x28 */ f32 minZ;
+    /* 0x2C */ char unk_2C[0x0C];
+    /* 0x38 */ f32 maxX;
+    /* 0x3C */ char unk_3C[0x0C];
+    /* 0x48 */ f32 maxY;
+    /* 0x4C */ char unk_4C[0x0C];
+    /* 0x58 */ f32 maxZ;
+    /* 0x5C */ char unk_5C[0x04];
+#else
     /* 0x10 */ s32 halfSizeY;
     /* 0x14 */ f32 minY;
     /* 0x18 */ char unk_18[0x04];
@@ -27,7 +43,8 @@ typedef struct ModelBoundingBox {
     /* 0x38 */ f32 maxY;
     /* 0x3C */ char unk_3C[0x8];
     /* 0x44 */ f32 maxZ;
-} ModelBoundingBox; // size = 0x48?
+#endif
+} ModelBoundingBox; // size = 0x48? (0x60 on PC)
 
 typedef struct ModelNodeProperty {
     /* 0x0 */ s32 key;
