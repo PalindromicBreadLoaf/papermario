@@ -652,8 +652,44 @@ static void gfx_sp_vertex(int n, int dest, const Vtx *src) {
     }
 }
 
-// Apply current other_mode_l to the GL depth and blend state.
-// Must be called after gfx_flush() so the state takes effect on the next batch.
+// Apply current other_mode_l to the GL depth and blend state
+// Must be called after gfx_flush()
+static bool gfx_blender_cycle_passthrough(u32 oml, int cycle) {
+    u32 clr_in_1;
+    u32 a_in_1;
+    u32 clr_in_2;
+    u32 a_in_2;
+
+    if (cycle == 2) {
+        clr_in_1 = (oml >> 28) & 3u;
+        a_in_1 = (oml >> 24) & 3u;
+        clr_in_2 = (oml >> 20) & 3u;
+        a_in_2 = (oml >> 16) & 3u;
+    } else {
+        clr_in_1 = (oml >> 30) & 3u;
+        a_in_1 = (oml >> 26) & 3u;
+        clr_in_2 = (oml >> 22) & 3u;
+        a_in_2 = (oml >> 18) & 3u;
+    }
+
+    return clr_in_1 == G_BL_CLR_IN && a_in_1 == G_BL_0
+        && clr_in_2 == G_BL_CLR_IN && a_in_2 == G_BL_1;
+}
+
+static bool gfx_uses_alpha_blend(u32 oml) {
+    u32 cycle_type = g_rdp.other_mode_h & (3u << G_MDSFT_CYCLETYPE);
+
+    if ((oml & CVG_X_ALPHA) != 0) {
+        return true;
+    }
+
+    if ((oml & FORCE_BL) == 0) {
+        return false;
+    }
+
+    return !gfx_blender_cycle_passthrough(oml, cycle_type == G_CYC_2CYCLE ? 2 : 1);
+}
+
 static void gfx_apply_render_state(void) {
     u32 oml = g_rdp.other_mode_l;
 
@@ -664,8 +700,7 @@ static void gfx_apply_render_state(void) {
 
     glDepthMask((oml & Z_UPD) ? GL_TRUE : GL_FALSE);
 
-    bool alpha_coverage = (oml & CVG_X_ALPHA) != 0;
-    bool use_alpha = (oml & FORCE_BL) || alpha_coverage;
+    bool use_alpha = gfx_uses_alpha_blend(oml);
 
     // Match CVG_X_ALPHA-style cutouts even when render-mode bits do not expose it.
     gfx_alpha_test = 1;
