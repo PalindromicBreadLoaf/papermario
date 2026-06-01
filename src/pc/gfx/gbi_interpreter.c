@@ -13,11 +13,11 @@ void* pc_resolve_physical_addr(uintptr_t addr);
 extern u8 gMapShapeData[];
 extern u8 gPcShapeArena[];
 extern u8 heap_collisionHead[];
+extern u16 SpriteShadingPalette[16];
 extern u32 gPcMapShapeDataSize;
 extern u32 gPcMapShapePayloadShift;
 
-// Bit-field extractors for GBI command words.  Both gbi_run_dl and all static
-// handler functions receive a 'cmd' pointer; the macros expand using that name.
+// Bit-field extractors for GBI command words.
 #define C0(pos, width) ((cmd->words.w0 >> (pos)) & ((1u << (width)) - 1u))
 #define C1(pos, width) ((cmd->words.w1 >> (pos)) & ((1u << (width)) - 1u))
 #define PC_SHAPE_KSEG_BASE  0x80210000u
@@ -148,6 +148,41 @@ static bool gbi_opcode_known(u8 opcode) {
 }
 
 static bool gfx_ptr_range_readable(const void *ptr, size_t size);
+
+static u16 gfx_pack_rgba5551(u8 r, u8 g, u8 b, u8 a) {
+    return (u16)((((u16)(r >> 3) & 0x1Fu) << 11)
+               | (((u16)(g >> 3) & 0x1Fu) << 6)
+               | (((u16)(b >> 3) & 0x1Fu) << 1)
+               | (a >= 128 ? 1u : 0u));
+}
+
+static void gfx_write_be16(u8 *dst, int index, u16 value) {
+    dst[index * 2 + 0] = (u8)(value >> 8);
+    dst[index * 2 + 1] = (u8)value;
+}
+
+static bool gfx_try_write_sprite_shading_palette(u8 tile) {
+    const u8 *source_palette = g_rdp.tlut_pal[0] != NULL ? g_rdp.tlut_pal[0] : g_rdp.tlut;
+    u8 *dst = (u8 *)g_rdp.color_buf_addr;
+
+    if (tile != 2 || dst != (u8 *)SpriteShadingPalette) {
+        return false;
+    }
+    if (!gfx_ptr_range_readable(source_palette, 0x20u)) {
+        return false;
+    }
+
+    for (int i = 0; i < 16; i++) {
+        u16 source = read_be16(source_palette + i * 2);
+        bool opaque = (source & 1u) != 0;
+        u8 r = opaque ? g_rdp.prim_r : g_rdp.env_r;
+        u8 g = opaque ? g_rdp.prim_g : g_rdp.env_g;
+        u8 b = opaque ? g_rdp.prim_b : g_rdp.env_b;
+
+        gfx_write_be16(dst, i, gfx_pack_rgba5551(r, g, b, 255));
+    }
+    return true;
+}
 
 // Decode one display-list command and report its byte stride.
 // PC command words are pointer-sized. Decompressed map shape display lists
@@ -1290,10 +1325,15 @@ static void gfx_draw_rectangle(s32 ulx, s32 uly, s32 lrx, s32 lry) {
 static void gfx_dp_texture_rectangle(s32 ulx, s32 uly, s32 lrx, s32 lry,
                                       u8 tile, s16 uls, s16 ult,
                                       s16 dsdx, s16 dtdy, bool flip) {
+    u8 saved_active_texture_tile = g_rdp.active_texture_tile;
     int saved_cc[8] = {
         g_rdp.cc_rgb_a, g_rdp.cc_rgb_b, g_rdp.cc_rgb_c, g_rdp.cc_rgb_d,
         g_rdp.cc_a_a,   g_rdp.cc_a_b,   g_rdp.cc_a_c,   g_rdp.cc_a_d,
     };
+
+    if (gfx_try_write_sprite_shading_palette(tile)) {
+        return;
+    }
 
     if (tile < 8) {
         g_rdp.active_texture_tile = tile;
@@ -1348,6 +1388,7 @@ static void gfx_dp_texture_rectangle(s32 ulx, s32 uly, s32 lrx, s32 lry,
     g_rdp.cc_rgb_c = saved_cc[2]; g_rdp.cc_rgb_d = saved_cc[3];
     g_rdp.cc_a_a   = saved_cc[4]; g_rdp.cc_a_b   = saved_cc[5];
     g_rdp.cc_a_c   = saved_cc[6]; g_rdp.cc_a_d   = saved_cc[7];
+    g_rdp.active_texture_tile = saved_active_texture_tile;
 }
 
 static void gfx_rdp_fill_rect(const Gfx *cmd) {
@@ -1751,8 +1792,13 @@ static void gbi_dump_cmd(u8 opcode, const Gfx *cmd) {
 
 void gbi_init(void) {
     rdp_state_init();
+    gbi_invalidate_texture_bindings();
+}
+
+void gbi_invalidate_texture_bindings(void) {
     s_texel0_id = 0;
     s_texel1_id = 0;
+    gfx_use_tex = 0;
 }
 
 void gbi_run_dl(Gfx *dl) {

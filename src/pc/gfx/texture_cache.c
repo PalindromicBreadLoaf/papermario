@@ -4,6 +4,7 @@
 #include "texture_cache.h"
 #include "tex_conv.h"
 #include "rdp_state.h"
+#include "gbi_interpreter.h"
 #include "glad/gl.h"
 
 #define TEX_CACHE_SLOTS 512u
@@ -15,6 +16,7 @@ typedef struct {
     u32       size_bytes;
     u32       stride_bytes;
     const u8 *tlut;
+    u32       tlut_hash;
     u16       width;
     u16       height;
     u8        cms;
@@ -46,11 +48,22 @@ void texture_cache_init(void) {
     s_cache_invalidated = false;
 }
 
+static u32 hash_bytes(const u8 *data, u32 size) {
+    u32 hash = 2166136261u;
+
+    for (u32 i = 0; i < size; i++) {
+        hash ^= data[i];
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
 static unsigned int cache_hash(const u8 *addr, u8 fmt, u8 siz, u32 size_bytes, u32 stride_bytes,
-                                const u8 *tlut, u16 width, u16 height, u8 cms, u8 cmt,
+                                const u8 *tlut, u32 tlut_hash, u16 width, u16 height, u8 cms, u8 cmt,
                                 u8 masks, u8 maskt) {
     uintptr_t h = (uintptr_t)addr * 2654435761u;
     h ^= (uintptr_t)tlut * 40503u;
+    h ^= (uintptr_t)tlut_hash * 2654435761u;
     h ^= (uintptr_t)size_bytes * 2246822519u;
     h ^= (uintptr_t)stride_bytes * 374761393u;
     h ^= (uintptr_t)((u32)fmt | ((u32)siz << 8) | ((u32)width << 16) | ((u32)height << 24))
@@ -173,8 +186,11 @@ unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
             return 0;
         }
     }
+    u32 tlut_hash = fmt == G_IM_FMT_CI
+        ? hash_bytes(tlut, siz == G_IM_SIZ_4b ? 0x20u : 0x200u)
+        : 0u;
 
-    unsigned int idx = cache_hash(addr, fmt, siz, packed_bytes, stride_bytes, tlut, width, height, cms, cmt,
+    unsigned int idx = cache_hash(addr, fmt, siz, packed_bytes, stride_bytes, tlut, tlut_hash, width, height, cms, cmt,
                                   masks, maskt);
 
     unsigned int free_slot = TEX_CACHE_SLOTS;
@@ -188,7 +204,8 @@ unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
         }
 
         if (e->addr == addr && e->fmt == fmt && e->siz == siz &&
-            e->size_bytes == packed_bytes && e->stride_bytes == stride_bytes && e->tlut == tlut &&
+            e->size_bytes == packed_bytes && e->stride_bytes == stride_bytes &&
+            e->tlut == tlut && e->tlut_hash == tlut_hash &&
             e->width == width && e->height == height &&
             e->cms == cms && e->cmt == cmt &&
             e->masks == masks && e->maskt == maskt) {
@@ -253,6 +270,7 @@ unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
     e->size_bytes = packed_bytes;
     e->stride_bytes = stride_bytes;
     e->tlut       = tlut;
+    e->tlut_hash  = tlut_hash;
     e->width      = width;
     e->height     = height;
     e->cms        = cms;
@@ -272,10 +290,12 @@ void texture_cache_flush(void) {
     }
     memset(s_cache, 0, sizeof(s_cache));
     s_cache_invalidated = false;
+    gbi_invalidate_texture_bindings();
 }
 
 void texture_cache_invalidate_all(void) {
     s_cache_invalidated = true;
+    gbi_invalidate_texture_bindings();
     for (int i = 0; i < GFX_RDP_TILE_COUNT; i++) {
         g_rdp.loaded_tiles[i].tex_id = 0;
         g_rdp.tile_dirty[i] = true;

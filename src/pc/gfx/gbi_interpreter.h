@@ -11,6 +11,9 @@ void gbi_init(void);
 // via gSPDisplayList calls.
 void gbi_run_dl(Gfx *dl);
 
+// Forget cached GL texture bindings after texture objects are deleted or made stale.
+void gbi_invalidate_texture_bindings(void);
+
 // When true, gbi_run_dl prints each decoded command to stderr.
 extern bool gfx_dump_dl;
 
