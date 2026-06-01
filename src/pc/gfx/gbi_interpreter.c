@@ -690,6 +690,10 @@ static bool gfx_uses_alpha_blend(u32 oml) {
     return !gfx_blender_cycle_passthrough(oml, cycle_type == G_CYC_2CYCLE ? 2 : 1);
 }
 
+static bool gfx_uses_decal_depth(u32 oml) {
+    return (oml & ZMODE_DEC) == ZMODE_DEC;
+}
+
 static void gfx_apply_render_state(void) {
     u32 oml = g_rdp.other_mode_l;
 
@@ -699,6 +703,13 @@ static void gfx_apply_render_state(void) {
         glDisable(GL_DEPTH_TEST);
 
     glDepthMask((oml & Z_UPD) ? GL_TRUE : GL_FALSE);
+
+    if (gfx_uses_decal_depth(oml)) {
+        glEnable(GL_POLYGON_OFFSET_FILL);
+        glPolygonOffset(-1.0f, -1.0f);
+    } else {
+        glDisable(GL_POLYGON_OFFSET_FILL);
+    }
 
     bool use_alpha = gfx_uses_alpha_blend(oml);
 
