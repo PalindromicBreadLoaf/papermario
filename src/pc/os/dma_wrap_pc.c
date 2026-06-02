@@ -78,11 +78,11 @@ static u8 pc_swap_bitfield_nibbles(u8 v) {
     return (u8)((v << 4) | (v >> 4));
 }
 
-static u8 pc_reverse_bits_in_byte(u8 v) {
-    v = (u8)(((v & 0xF0) >> 4) | ((v & 0x0F) << 4));
-    v = (u8)(((v & 0xCC) >> 2) | ((v & 0x33) << 2));
-    v = (u8)(((v & 0xAA) >> 1) | ((v & 0x55) << 1));
-    return v;
+// Convert a byte holding a big-endian `field_hi:6` + `field_lo:2` pair into little-endian layout
+static u8 pc_swap_bitfield_6_2(u8 v) {
+    u8 hi = (u8)((v >> 2) & 0x3F);
+    u8 lo = (u8)(v & 0x03);
+    return (u8)(hi | (lo << 6));
 }
 
 static void pc_swap_texture_header(void* dest, void* data, u32 length) {
@@ -106,10 +106,7 @@ static void pc_swap_texture_header(void* dest, void* data, u32 length) {
         memcpy(header + off, &value, sizeof(value));
     }
 
-    // 0x2A packs auxCombineType:6 + auxCombineSubType:2
-    // The rest of the bit-field bytes pack two 4-bit fields. Reverse the bit order at 0x2A and
-    // swap nibbles at 0x2B..0x2E.
-    header[0x2A] = pc_reverse_bits_in_byte(header[0x2A]);
+    header[0x2A] = pc_swap_bitfield_6_2(header[0x2A]);
     header[0x2B] = pc_swap_bitfield_nibbles(header[0x2B]);
     header[0x2C] = pc_swap_bitfield_nibbles(header[0x2C]);
     header[0x2D] = pc_swap_bitfield_nibbles(header[0x2D]);
