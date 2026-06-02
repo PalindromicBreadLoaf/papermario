@@ -1,8 +1,13 @@
 #include "kmr_06.h"
 #include "ld_addrs.h"
 
+#ifdef BUILD_PC
+extern intptr_t gItemIconRasterOffsets[];
+extern intptr_t gItemIconPaletteOffsets[];
+#else
 extern s32 gItemIconRasterOffsets[];
 extern s32 gItemIconPaletteOffsets[];
+#endif
 
 typedef struct StickerData {
     /* 0x00 */ s32 imgfxIdx;

@@ -683,8 +683,13 @@ void msg_play_speech_sound(MessagePrintState* printer, u8 character) {
     }
 }
 
+#ifdef BUILD_PC
+extern intptr_t gItemIconRasterOffsets[];
+extern intptr_t gItemIconPaletteOffsets[];
+#else
 extern s32 gItemIconRasterOffsets[];
 extern s32 gItemIconPaletteOffsets[];
+#endif
 extern IMG_PTR MsgLetterRasterOffsets[];
 extern PAL_PTR MsgLetterPaletteOffsets[];
 extern MsgVoice MsgVoices[];
