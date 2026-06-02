@@ -1720,9 +1720,16 @@ s32 entity_raycast_down(f32* x, f32* y, f32* z, f32* hitYaw, f32* hitPitch, f32*
     f32 hitX, hitY, hitZ;
     f32 hitDepth;
     f32 hitNx, hitNy, hitNz;
+#ifdef BUILD_PC
+    // `s32` is widened to intptr_t but these are required to be 32bit for -1 to remain miss.
+    int entityID;
+    int colliderID;
+    int hitID;
+#else
     s32 entityID;
     s32 colliderID;
     s32 hitID;
+#endif
     s32 ret;
 
     hitDepth = 32767.0f;
