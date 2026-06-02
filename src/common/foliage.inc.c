@@ -3,9 +3,27 @@
 
 #include "FoliageTransform.inc.c"
 
+#ifdef BUILD_PC
+API_CALLABLE(N(pc_unpack_foliage_config)) {
+    Bytecode* args = script->ptrReadPos;
+    void** fields = (void**)(uintptr_t)(u32)evt_get_variable(script, *args++);
+    s32 count = evt_get_variable(script, *args++);
+    s32 i;
+
+    for (i = 0; i < count; i++) {
+        evt_set_variable(script, *args++, (s32)(uintptr_t)fields[i]);
+    }
+    return ApiStatus_DONE2;
+}
+#endif
+
 EvtScript N(EVS_SearchBush) = {
+#ifdef BUILD_PC
+    Call(N(pc_unpack_foliage_config), LVar0, 4, LVar1, LVar2, LVar3, LVar4)
+#else
     UseBuf(LVar0)
     BufRead4(LVar1, LVar2, LVar3, LVar4)
+#endif
     Call(GetPlayerPos, LVar5, LVarF, LVar7)
     Thread
         Set(LFlag0, false)
@@ -69,9 +87,13 @@ EvtScript N(EVS_SearchBush) = {
 
 EvtScript N(EVS_ShakeTree) = {
     SetTimescale(Float(2.0))
+#ifdef BUILD_PC
+    Call(N(pc_unpack_foliage_config), LVar0, 5, LVar1, LVar2, LVar3, LVar4, LVar5)
+#else
     UseBuf(LVar0)
     BufRead4(LVar1, LVar2, LVar3, LVar4)
     BufRead1(LVar5)
+#endif
     Call(GetPlayerPos, LVar6, LVarF, LVar8)
     Call(PlaySound, SOUND_SMACK_TREE)
     Call(PlaySound, SOUND_SHAKE_TREE_LEAVES)

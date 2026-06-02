@@ -13,8 +13,15 @@ typedef struct FoliageDropList {
         s32 itemID;
         Vec3i pos;
         s32 spawnMode;
+#ifdef BUILD_PC
+        // Read through the 32-bit EVT script buffer
+        // 4 bytes wide even though bytecode is 8 bytes on PC
+        s32 pickupFlag;
+        s32 spawnFlag;
+#else
         Bytecode pickupFlag;
         Bytecode spawnFlag;
+#endif
     } drops[VLA];
 } FoliageDropList;
 
