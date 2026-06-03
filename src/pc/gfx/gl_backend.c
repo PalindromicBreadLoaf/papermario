@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <string.h>
 #include <SDL2/SDL.h>
 #include "glad/gl.h"
@@ -91,6 +92,11 @@ static SDL_GLContext  s_gl_ctx;
 static GLuint         s_vao;
 static GLuint         s_vbo;
 static GLuint         s_program;
+static GLuint         s_prev_frame_tex;
+static GLuint         s_black_tex;
+static int            s_prev_frame_w;
+static int            s_prev_frame_h;
+static bool           s_prev_frame_valid;
 static UniformLocs    s_uloc;
 
 float  gfx_buf_vbo[GFX_MAX_BUFFERED * 3 * GFX_FLOATS_PER_VTX];
@@ -276,6 +282,71 @@ static void gl_backend_dump_screenshot(int frame_index) {
     free(buf);
 }
 
+static GLuint gl_backend_black_texture(void) {
+    static const unsigned char black[] = { 0, 0, 0, 255 };
+    GLint active_texture = GL_TEXTURE0;
+    GLint bound_texture = 0;
+
+    if (s_black_tex != 0) {
+        return s_black_tex;
+    }
+
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &active_texture);
+    glActiveTexture(GL_TEXTURE0);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound_texture);
+
+    glGenTextures(1, &s_black_tex);
+    glBindTexture(GL_TEXTURE_2D, s_black_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, black);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    glBindTexture(GL_TEXTURE_2D, (GLuint)bound_texture);
+    glActiveTexture((GLenum)active_texture);
+    return s_black_tex;
+}
+
+static void gl_backend_capture_previous_frame(void) {
+    if (gl_window_width <= 0 || gl_window_height <= 0) {
+        s_prev_frame_valid = false;
+        return;
+    }
+
+    GLint active_texture = GL_TEXTURE0;
+    GLint bound_texture = 0;
+
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &active_texture);
+    glActiveTexture(GL_TEXTURE0);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound_texture);
+
+    if (s_prev_frame_tex == 0) {
+        glGenTextures(1, &s_prev_frame_tex);
+    }
+
+    glBindTexture(GL_TEXTURE_2D, s_prev_frame_tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    if (s_prev_frame_w != gl_window_width || s_prev_frame_h != gl_window_height) {
+        s_prev_frame_w = gl_window_width;
+        s_prev_frame_h = gl_window_height;
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, s_prev_frame_w, s_prev_frame_h, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    }
+
+    glReadBuffer(GL_BACK);
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, s_prev_frame_w, s_prev_frame_h);
+    s_prev_frame_valid = true;
+
+    glBindTexture(GL_TEXTURE_2D, (GLuint)bound_texture);
+    glActiveTexture((GLenum)active_texture);
+}
+
 void gl_backend_end_frame(void) {
     gfx_flush();
     static int frame_counter = 0;
@@ -287,7 +358,12 @@ void gl_backend_end_frame(void) {
         }
     }
     frame_counter++;
+    gl_backend_capture_previous_frame();
     SDL_GL_SwapWindow(s_window);
+}
+
+unsigned int gl_backend_previous_frame_texture(void) {
+    return s_prev_frame_valid ? s_prev_frame_tex : gl_backend_black_texture();
 }
 
 void gfx_flush(void) {
@@ -335,6 +411,8 @@ void gfx_bind_texture(int unit, unsigned int tex_id) {
 }
 
 void gl_backend_shutdown(void) {
+    if (s_prev_frame_tex) { glDeleteTextures(1, &s_prev_frame_tex); s_prev_frame_tex = 0; }
+    if (s_black_tex) { glDeleteTextures(1, &s_black_tex); s_black_tex = 0; }
     if (s_program) { glDeleteProgram(s_program);         s_program = 0; }
     if (s_vbo)     { glDeleteBuffers(1, &s_vbo);         s_vbo     = 0; }
     if (s_vao)     { glDeleteVertexArrays(1, &s_vao);    s_vao     = 0; }

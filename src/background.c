@@ -63,6 +63,12 @@ u16 blend_background_channel(u16 arg0, s32 arg1, s32 alpha) {
     return arg0 + (arg1 - arg0) * alpha / 256;
 }
 
+#ifdef BUILD_PC
+#define BG_PAL_BSWAP16(c) ((u16)((((u16)(c)) >> 8) | (((u16)(c)) << 8)))
+#else
+#define BG_PAL_BSWAP16(c) ((u16)(c))
+#endif
+
 void appendGfx_background_texture(void) {
     Camera* cam = &gCameras[gCurrentCameraID];
     u16 flags = 0;
@@ -150,27 +156,26 @@ void appendGfx_background_texture(void) {
             case ENV_TINT_SHROUD:
                 if (fogA == 255) {
                     for (i = 0; i < ARRAY_COUNT(gBackgroundPalette); i++) {
-                        gBackgroundPalette[i] = 1;
+                        gBackgroundPalette[i] = BG_PAL_BSWAP16(1);
                     }
                 } else {
                     // lerp from background palette color to fog color based on fog alpha
                     for (i = 0; i < ARRAY_COUNT(gBackgroundPalette); i++) {
                         // NOTE: values after UNPACK range from [0,31], so we need to shift fog color into that range
-                        u16 palColor = gGameStatusPtr->backgroundPalette[i];
+                        u16 palColor = BG_PAL_BSWAP16(gGameStatusPtr->backgroundPalette[i]);
                         blendedB = blend_background_channel(UNPACK_PAL_B(palColor), fogB >> 3, fogA);
                         blendedG = blend_background_channel(UNPACK_PAL_G(palColor), fogG >> 3, fogA);
                         blendedR = blend_background_channel(UNPACK_PAL_R(palColor), fogR >> 3, fogA);
-                        gBackgroundPalette[i] = blendedB << 1 | blendedG << 6 | blendedR << 11 | 1;
+                        gBackgroundPalette[i] = BG_PAL_BSWAP16(blendedB << 1 | blendedG << 6 | blendedR << 11 | 1);
                     }
                 }
                 break;
             case ENV_TINT_DEPTH:
             case ENV_TINT_REMAP:
             default:
-                // the background color channels are remapped from [0,255] -> [min,max]
+                // the background color channels are remapped from [0,255] to [min,max]
                 for (i = 0; i < ARRAY_COUNT(gBackgroundPalette); i++) {
-                    // NOTE: values after UNPACK range from [0,31], so we need to shift other colors into that range
-                    u16 palColor = gGameStatusPtr->backgroundPalette[i];
+                    u16 palColor = BG_PAL_BSWAP16(gGameStatusPtr->backgroundPalette[i]);
                     blendedB = (b2 >> 3) + ((UNPACK_PAL_B(palColor) * b1 >> 3) >> 5);
                     blendedG = (g2 >> 3) + ((UNPACK_PAL_G(palColor) * g1 >> 3) >> 5);
                     blendedR = (r2 >> 3) + ((UNPACK_PAL_R(palColor) * r1 >> 3) >> 5);
@@ -184,7 +189,7 @@ void appendGfx_background_texture(void) {
                     if (blendedR > 0x1F) {
                         blendedR = 0x1F;
                     }
-                    gBackgroundPalette[i] = blendedB << 1 | blendedG << 6 | blendedR << 11 | 1;
+                    gBackgroundPalette[i] = BG_PAL_BSWAP16(blendedB << 1 | blendedG << 6 | blendedR << 11 | 1);
                 }
                 break;
         }

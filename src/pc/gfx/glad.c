@@ -12,6 +12,9 @@ PFNGLVIEWPORTPROC                  glViewport                 = NULL;
 PFNGLSCISSORPROC                   glScissor                  = NULL;
 PFNGLPOLYGONOFFSETPROC             glPolygonOffset            = NULL;
 PFNGLDRAWARRAYSPROC                glDrawArrays               = NULL;
+PFNGLGETINTEGERVPROC               glGetIntegerv              = NULL;
+PFNGLREADBUFFERPROC                glReadBuffer               = NULL;
+PFNGLCOPYTEXSUBIMAGE2DPROC         glCopyTexSubImage2D        = NULL;
 PFNGLGENTEXTURESPROC               glGenTextures              = NULL;
 PFNGLBINDTEXTUREPROC               glBindTexture              = NULL;
 PFNGLTEXIMAGE2DPROC                glTexImage2D               = NULL;
@@ -80,6 +83,9 @@ int gladLoadGL(GLADloadfunc load) {
     LOAD_REQ(PFNGLSCISSORPROC,           glScissor)
     LOAD_REQ(PFNGLPOLYGONOFFSETPROC,     glPolygonOffset)
     LOAD_REQ(PFNGLDRAWARRAYSPROC,        glDrawArrays)
+    LOAD_REQ(PFNGLGETINTEGERVPROC,       glGetIntegerv)
+    LOAD_REQ(PFNGLREADBUFFERPROC,        glReadBuffer)
+    LOAD_REQ(PFNGLCOPYTEXSUBIMAGE2DPROC, glCopyTexSubImage2D)
     LOAD_REQ(PFNGLGENTEXTURESPROC,       glGenTextures)
     LOAD_REQ(PFNGLBINDTEXTUREPROC,       glBindTexture)
     LOAD_REQ(PFNGLTEXIMAGE2DPROC,        glTexImage2D)
@@ -123,7 +129,7 @@ int gladLoadGL(GLADloadfunc load) {
     LOAD_REQ(PFNGLBINDVERTEXARRAYPROC,    glBindVertexArray)
     LOAD_REQ(PFNGLDELETEVERTEXARRAYSPROC, glDeleteVertexArrays)
 
-    // GL 4.3 - optional; NULL on macOS
+    // GL 4.3 optional. NULL on macOS because Apple hates us all
     LOAD_OPT(PFNGLDEBUGMESSAGECALLBACKPROC, glDebugMessageCallback)
 
 #undef LOAD_REQ

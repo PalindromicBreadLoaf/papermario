@@ -153,8 +153,9 @@ static void bleed_transparent_edges(u8 *rgba, u16 width, u16 height) {
 
 static GLenum wrap_mode(u8 flag, u8 mask) {
     if (mask == G_TX_NOMASK) return GL_CLAMP_TO_EDGE;
-    if (flag & G_TX_CLAMP)  return GL_CLAMP_TO_EDGE;
+    // Mirror takes priority over clamp because the other way looked funky
     if (flag & G_TX_MIRROR) return GL_MIRRORED_REPEAT;
+    if (flag & G_TX_CLAMP)  return GL_CLAMP_TO_EDGE;
     return GL_REPEAT;
 }
 
@@ -233,7 +234,9 @@ unsigned int texture_cache_get(const u8 *addr, u8 fmt, u8 siz,
         stride_bytes = row_bytes;
     }
     if (stride_bytes < row_bytes) {
-        TEXCACHE_DEBUG_LOG("[texcache] reject stride<row stride=%u row=%u\n", stride_bytes, row_bytes);
+        TEXCACHE_DEBUG_LOG("[texcache] reject stride<row stride=%u row=%u fmt=%u siz=%u w=%u h=%u\n",
+                           stride_bytes, row_bytes, (unsigned)fmt, (unsigned)siz,
+                           (unsigned)width, (unsigned)height);
         return 0;
     }
     u32 packed_bytes = row_bytes * (u32)height;

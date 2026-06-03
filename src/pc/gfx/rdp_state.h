@@ -7,15 +7,14 @@
 
 // Maximum directional lights, excluding ambient.
 #define GFX_MAX_LIGHTS 2
-// Vertex cache size for gSPVertex (F3DEX2 supports up to 32, game uses <= 64).
+// Vertex cache size for gSPVertex
 #define GFX_MAX_VERTICES 64
-// Maximum display-list call-stack depth for gSPDisplayList recursion.
+// Maximum display-list call-stack depth for gSPDisplayList recursion
 #define GFX_DL_STACK_DEPTH 16
 #define GFX_RDP_TILE_COUNT 8
 #define GFX_SHADER_TEXTURES 2
 
 // Mirrors one N64 tile slot.
-
 typedef struct {
     u8  fmt;
     u8  siz;
@@ -25,6 +24,7 @@ typedef struct {
     u8  palette;      // CI4 palette bank from gDPSetTile
     u8  cms, cmt;     // clamp/mirror/wrap flags
     u8  masks, maskt; // wrap mask size
+    u8  shifts, shiftt; // texture-coord shift exponent (0 = none, 11..15 = left shift)
     u32 tmem_offset;  // TMEM word offset
 } TileDesc;
 
@@ -35,6 +35,7 @@ typedef struct {
     u16          width;
     u16          height;
     u8           tile;
+    bool         framebuffer_copy;
     unsigned int tex_id;
 } LoadedTexture;
 
@@ -45,37 +46,36 @@ typedef struct {
     u16       width;
     u16       height;
     u32       tmem_offset;
+    bool      framebuffer_copy;
     bool      valid;
 } TmemTextureLoad;
 
 // Loaded-vertex cache
 // One entry per slot in the RSP vertex cache, plus 4 extra for rectangle draws.
-
 typedef struct {
     float x, y, z, w; // clip-space position (MP_matrix already applied)
-    float u, v;       // scaled texture coordinates (S10.5 units)
+    float u, v;       // scaled texture coordinates
     u8    r, g, b, a; // vertex color / fog-factor in alpha
     u8    clip_rej;   // trivial rejection bitmask (6 half-space bits)
 } LoadedVertex;
 
 // RSP state
-
 typedef struct {
-    // Matrix stack: modelview[0] is always the base, [depth-1] is current top.
+    // Matrix stack: modelview[0] is always the base, [depth-1] is current top
     float modelview_stack[11][4][4];
-    int   modelview_depth; // 1-based; minimum 1
+    int   modelview_depth; // 1-based, min 1
 
     float P_matrix[4][4];  // projection matrix
-    float MP_matrix[4][4]; // cached MV_top × P (recomputed on any change)
+    float MP_matrix[4][4]; // cached MV_top × P
 
     u32 geometry_mode; // G_ZBUFFER, G_LIGHTING, G_CULL_*, G_FOG, etc.
 
-    s16 fog_mul; // from gSPFogFactor / G_MW_FOG
+    s16 fog_mul;
     s16 fog_offset;
 
     struct {
         u16 s, t;
-    } tex_scale; // U0.16, set by gSPTexture
+    } tex_scale; // U0.16
 
     // Lights: [0 .. num_lights-2] are directional, [num_lights-1] is ambient.
     Light_t lights[GFX_MAX_LIGHTS + 1];
@@ -87,21 +87,20 @@ typedef struct {
     // Lookat-X and lookat-Y coefficients for G_TEXTURE_GEN.
     float lookat_coeffs[2][3];
 
-    // Vertex cache (+ 4 slots at the end reserved for rectangle corners).
+    // Vertex cache (+ 4 slots at the end reserved for rectangle corners)
     LoadedVertex loaded_vertices[GFX_MAX_VERTICES + 4];
 
-    // State machine for multi-word commands (G_TEXRECT, G_FILLRECT in F3DEX2).
+    // State machine for multi-word commands
     u32 saved_opcode;
     s32 saved_ulx, saved_uly, saved_lrx, saved_lry;
     u8  saved_tile;
     u16 saved_uls, saved_ult;
 
-    // RSP segmented-address bases, set by gSPSegment/G_MW_SEGMENT.
+    // RSP segmented-address bases set by gSPSegment/G_MW_SEGMENT.
     void* segments[16];
 } RspState;
 
 // RDP state
-
 typedef struct {
     // Texture pipeline
     struct {
@@ -128,6 +127,7 @@ typedef struct {
     u8 prim_r, prim_g, prim_b, prim_a;
     u8 fog_r, fog_g, fog_b, fog_a;
     u8 fill_r, fill_g, fill_b, fill_a;
+    u16 prim_depth, prim_depth_delta;
 
     // Combiner + render mode
     u32 combine_mode; // packed combiner slot indices
@@ -153,8 +153,7 @@ typedef struct {
     void* z_buf_addr;
     void* color_buf_addr;
 
-    // Set whenever other_mode_l changes; triggers a flush + GL state update before
-    // the next triangle batch so render-mode boundaries are respected.
+    // Set whenever other_mode_l changes; triggers a flush + GL state update
     bool blend_dirty;
 } RdpState;
 

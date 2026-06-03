@@ -18,6 +18,11 @@ void gl_backend_start_frame(void);
 
 void gl_backend_end_frame(void);
 
+// Return the texture containing the previous completed GL frame. Before the
+// first capture.
+// Returns a black fallback texture.
+unsigned int gl_backend_previous_frame_texture(void);
+
 // Upload the pending vertex batch and issue a draw call, then reset the batch.
 void gfx_flush(void);
 

@@ -3,9 +3,6 @@
 
 // All GL entry points are loaded through gladLoadGL((GLADloadfunc)SDL_GL_GetProcAddress).
 // Returns 1 on success, 0 if any required symbol could not be resolved.
-//
-// Do not include system <GL/gl.h> or <SDL2/SDL_opengl.h> alongside this header.
-// GLAD owns all GL type and function pointer declarations.
 
 #include <stddef.h>
 #include <stdint.h>
@@ -50,6 +47,7 @@ typedef void           GLvoid;
 // Depth comparison
 #define GL_LESS                           0x0201u
 #define GL_LEQUAL                         0x0203u
+#define GL_ALWAYS                         0x0207u
 
 // Blend factors
 #define GL_ZERO                           0u
@@ -82,6 +80,7 @@ typedef void           GLvoid;
 #define GL_TEXTURE_MIN_FILTER             0x2801u
 #define GL_TEXTURE_WRAP_S                 0x2802u
 #define GL_TEXTURE_WRAP_T                 0x2803u
+#define GL_TEXTURE_BINDING_2D             0x8069u
 #define GL_REPEAT                         0x2901u
 #define GL_CLAMP_TO_EDGE                  0x812Fu
 #define GL_MIRRORED_REPEAT                0x8370u
@@ -89,6 +88,8 @@ typedef void           GLvoid;
 #define GL_RGBA                           0x1908u
 #define GL_TEXTURE0                       0x84C0u
 #define GL_TEXTURE1                       0x84C1u
+#define GL_ACTIVE_TEXTURE                 0x84E0u
+#define GL_BACK                           0x0405u
 
 // Buffer objects
 #define GL_ARRAY_BUFFER                   0x8892u
@@ -128,6 +129,12 @@ typedef void     (GLAPIENTRY *PFNGLVIEWPORTPROC)           (GLint x, GLint y, GL
 typedef void     (GLAPIENTRY *PFNGLSCISSORPROC)            (GLint x, GLint y, GLsizei w, GLsizei h);
 typedef void     (GLAPIENTRY *PFNGLPOLYGONOFFSETPROC)      (GLfloat factor, GLfloat units);
 typedef void     (GLAPIENTRY *PFNGLDRAWARRAYSPROC)         (GLenum mode, GLint first, GLsizei count);
+typedef void     (GLAPIENTRY *PFNGLGETINTEGERVPROC)        (GLenum pname, GLint *data);
+typedef void     (GLAPIENTRY *PFNGLREADBUFFERPROC)         (GLenum src);
+typedef void     (GLAPIENTRY *PFNGLCOPYTEXSUBIMAGE2DPROC)  (GLenum target, GLint level,
+                                                            GLint xoffset, GLint yoffset,
+                                                            GLint x, GLint y,
+                                                            GLsizei width, GLsizei height);
 typedef void     (GLAPIENTRY *PFNGLGENTEXTURESPROC)        (GLsizei n, GLuint *textures);
 typedef void     (GLAPIENTRY *PFNGLBINDTEXTUREPROC)        (GLenum target, GLuint texture);
 typedef void     (GLAPIENTRY *PFNGLTEXIMAGE2DPROC)         (GLenum target, GLint level,
@@ -202,6 +209,9 @@ extern PFNGLVIEWPORTPROC                  glViewport;
 extern PFNGLSCISSORPROC                   glScissor;
 extern PFNGLPOLYGONOFFSETPROC             glPolygonOffset;
 extern PFNGLDRAWARRAYSPROC                glDrawArrays;
+extern PFNGLGETINTEGERVPROC               glGetIntegerv;
+extern PFNGLREADBUFFERPROC                glReadBuffer;
+extern PFNGLCOPYTEXSUBIMAGE2DPROC         glCopyTexSubImage2D;
 extern PFNGLGENTEXTURESPROC               glGenTextures;
 extern PFNGLBINDTEXTUREPROC               glBindTexture;
 extern PFNGLTEXIMAGE2DPROC                glTexImage2D;
@@ -243,11 +253,10 @@ extern PFNGLGENVERTEXARRAYSPROC           glGenVertexArrays;
 extern PFNGLBINDVERTEXARRAYPROC           glBindVertexArray;
 extern PFNGLDELETEVERTEXARRAYSPROC        glDeleteVertexArrays;
 
-// NULL on platforms that do not expose GL 4.3
+// NULL on platforms that do not expose GL 4.3 (*cough* *cough* macOS)
 extern PFNGLDEBUGMESSAGECALLBACKPROC      glDebugMessageCallback;
 
 // Loader
-
 typedef void *(*GLADloadfunc)(const char *name);
 
 // Load all GL function pointers via `load`.
