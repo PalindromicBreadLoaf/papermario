@@ -13,6 +13,9 @@ void* pc_resolve_physical_addr(uintptr_t addr);
 extern u8 gMapShapeData[];
 extern u8 gPcShapeArena[];
 extern u8 heap_collisionHead[];
+extern u16 gFrameBuf0[];
+extern u16 gFrameBuf1[];
+extern u16 gFrameBuf2[];
 extern u16 SpriteShadingPalette[16];
 extern u32 gPcMapShapeDataSize;
 extern u32 gPcMapShapePayloadShift;
@@ -25,6 +28,9 @@ extern u32 gPcMapShapePayloadShift;
 #define PC_SHAPE_HEADER_SIZE 0x20u
 #define PC_SHAPE_SIZE_LIMIT 0x40000u
 #define PC_COLLISION_HEAP_SIZE 0x18000u
+#define PC_FRAMEBUFFER_WIDTH 320u
+#define PC_FRAMEBUFFER_HEIGHT 240u
+#define PC_FRAMEBUFFER_BYTES (PC_FRAMEBUFFER_WIDTH * PC_FRAMEBUFFER_HEIGHT * sizeof(u16))
 
 static unsigned int s_texel0_id;
 static unsigned int s_texel1_id;
@@ -184,10 +190,28 @@ static bool gfx_try_write_sprite_shading_palette(u8 tile) {
     return true;
 }
 
+static bool gfx_addr_in_framebuffer(const u8 *addr) {
+    const u8 *framebuffers[] = {
+        (const u8 *)gFrameBuf0,
+        (const u8 *)gFrameBuf1,
+        (const u8 *)gFrameBuf2,
+    };
+    uintptr_t target = (uintptr_t)addr;
+
+    for (size_t i = 0; i < sizeof(framebuffers) / sizeof(framebuffers[0]); i++) {
+        uintptr_t start = (uintptr_t)framebuffers[i];
+        uintptr_t end = start + PC_FRAMEBUFFER_BYTES;
+
+        if (target >= start && target < end) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Decode one display-list command and report its byte stride.
 // PC command words are pointer-sized. Decompressed map shape display lists
-// remain packed as 8-byte N64 commands, with w0/w1 in the low/high halves on
-// 64-bit hosts.
+// remain packed as 8-byte N64 commands, with w0/w1 in the low/high halves
 static Gfx gbi_read_cmd(const Gfx *src, int *stride_bytes) {
     Gfx cmd = *src;
     u32 packed_w0 = (u32)cmd.words.w0;
@@ -692,13 +716,18 @@ static bool gfx_uses_decal_depth(u32 oml) {
 
 static void gfx_apply_render_state(void) {
     u32 oml = g_rdp.other_mode_l;
+    bool z_compare = (oml & Z_CMP) != 0;
+    bool z_update = (oml & Z_UPD) != 0;
+    bool z_buffer = (g_rsp.geometry_mode & G_ZBUFFER) != 0;
 
-    if ((oml & Z_CMP) && (g_rsp.geometry_mode & G_ZBUFFER))
+    if (z_buffer && (z_compare || z_update)) {
         glEnable(GL_DEPTH_TEST);
-    else
+        glDepthFunc(z_compare ? GL_LEQUAL : GL_ALWAYS);
+    } else {
         glDisable(GL_DEPTH_TEST);
+    }
 
-    glDepthMask((oml & Z_UPD) ? GL_TRUE : GL_FALSE);
+    glDepthMask(z_update ? GL_TRUE : GL_FALSE);
 
     if (gfx_uses_decal_depth(oml)) {
         glEnable(GL_POLYGON_OFFSET_FILL);
@@ -707,20 +736,24 @@ static void gfx_apply_render_state(void) {
         glDisable(GL_POLYGON_OFFSET_FILL);
     }
 
-    bool use_alpha = gfx_uses_alpha_blend(oml);
+    bool texture_edge = (oml & CVG_X_ALPHA) != 0;
+    bool use_alpha = texture_edge || gfx_uses_alpha_blend(oml);
 
     if (use_alpha) {
-        gfx_alpha_test = 1;
+        gfx_alpha_test = texture_edge ? 2 : (z_update ? 0 : 1);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     } else {
-        gfx_alpha_test = (oml & CVG_X_ALPHA) ? 2 : 1;
+        gfx_alpha_test = 1;
         glDisable(GL_BLEND);
     }
 }
 
-// If other_mode_l changed since the last draw, flush pending tris (so they
-// keep the old blend state) and then switch to the new GL state.
+static float gfx_prim_depth_ndc(void) {
+    return ((float)g_rdp.prim_depth / (float)G_MAXFBZ) * 2.0f - 1.0f;
+}
+
+// If other_mode_l changed since the last draw flush then switch
 static void gfx_ensure_blend_state(void) {
     if (!g_rdp.blend_dirty) return;
     gfx_flush();
@@ -734,6 +767,26 @@ static u16 gfx_tile_width(const TileDesc *td) {
 
 static u16 gfx_tile_height(const TileDesc *td) {
     return (td->lrt > td->ult) ? (u16)((td->lrt - td->ult) / 4 + 1) : 1;
+}
+
+static float gfx_tile_shift_scale(u8 shift) {
+    if (shift == 0) {
+        return 1.0f;
+    }
+    if (shift <= 10) {
+        return 1.0f / (float)(1u << shift);
+    }
+    return (float)(1u << (16u - shift));
+}
+
+static u32 gfx_bytes_to_texels(u8 siz, u32 bytes) {
+    switch (siz) {
+        case G_IM_SIZ_4b:  return bytes * 2u;
+        case G_IM_SIZ_8b:  return bytes;
+        case G_IM_SIZ_16b: return bytes / 2u;
+        case G_IM_SIZ_32b: return bytes / 4u;
+        default:           return bytes / 2u;
+    }
 }
 
 static TmemTextureLoad *gfx_find_tmem_load(u32 tmem) {
@@ -784,6 +837,7 @@ static void gfx_store_tmem_load(u32 tmem, const u8 *addr, u32 size_bytes, u32 st
     load->width = width;
     load->height = height;
     load->tmem_offset = tmem;
+    load->framebuffer_copy = gfx_addr_in_framebuffer(addr);
     load->valid = true;
 }
 
@@ -803,6 +857,7 @@ static void gfx_assign_tmem_load_to_tile(u8 tile, u32 tmem) {
     loaded->width = load->width;
     loaded->height = load->height;
     loaded->tile = tile;
+    loaded->framebuffer_copy = load->framebuffer_copy;
     loaded->tex_id = 0;
     g_rdp.tile_dirty[tile] = true;
 }
@@ -818,11 +873,29 @@ static void gfx_upload_tile(u8 tile) {
     TileDesc *td = &g_rdp.tile[tile];
     u16 width = gfx_tile_width(td);
     u16 height = gfx_tile_height(td);
+    
+    if (loaded->stride_bytes > 0) {
+        u16 data_width = (u16)gfx_bytes_to_texels(td->siz, loaded->stride_bytes);
+        if (data_width > 0 && data_width < width) {
+            width = data_width;
+        }
+    }
 
     loaded->tile = tile;
     loaded->width = width;
     loaded->height = height;
     loaded->tex_id = 0;
+
+    if (loaded->framebuffer_copy) {
+        unsigned int tex_id = gl_backend_previous_frame_texture();
+
+        if (tex_id != 0) {
+            loaded->width = PC_FRAMEBUFFER_WIDTH;
+            loaded->height = PC_FRAMEBUFFER_HEIGHT;
+            loaded->tex_id = tex_id;
+        }
+        return;
+    }
 
     if (!loaded->addr || !loaded->size_bytes) {
         return;
@@ -945,7 +1018,7 @@ static void gfx_sp_tri1(u8 v0, u8 v1, u8 v2) {
     float linear_offset = ((g_rdp.other_mode_h & (3u << G_MDSFT_TEXTFILT)) == (u32)G_TF_POINT) ? 0.0f : 16.0f;
 
     // Build UVs per TMEM slot because TEXEL0 and TEXEL1 can use different tile origins.
-    float inv_w[2], inv_h[2], uls_s105[2], ult_s105[2];
+    float inv_w[2], inv_h[2], uls_s105[2], ult_s105[2], shift_s[2], shift_t[2];
     for (int s = 0; s < 2; s++) {
         u8 t = g_rdp.loaded[s].tile < 8 ? g_rdp.loaded[s].tile : (u8)s;
         const TileDesc *tds = &g_rdp.tile[t];
@@ -957,21 +1030,44 @@ static void gfx_sp_tri1(u8 v0, u8 v1, u8 v2) {
         if (h <= 0.0f && tds->lrt >= tds->ult) {
             h = (float)((u32)(tds->lrt - tds->ult) / 4u + 1u);
         }
-        inv_w[s]    = w > 0.0f ? 1.0f / (w * 32.0f) : 1.0f;
-        inv_h[s]    = h > 0.0f ? 1.0f / (h * 32.0f) : 1.0f;
-        uls_s105[s] = (float)tds->uls * 8.0f;
-        ult_s105[s] = (float)tds->ult * 8.0f;
+        if (g_rdp.loaded[s].framebuffer_copy) {
+            inv_w[s] = 1.0f / (PC_FRAMEBUFFER_WIDTH * 32.0f);
+            inv_h[s] = 1.0f / (PC_FRAMEBUFFER_HEIGHT * 32.0f);
+            uls_s105[s] = 0.0f;
+            ult_s105[s] = 0.0f;
+            shift_s[s] = 1.0f;
+            shift_t[s] = 1.0f;
+        } else {
+            inv_w[s]    = w > 0.0f ? 1.0f / (w * 32.0f) : 1.0f;
+            inv_h[s]    = h > 0.0f ? 1.0f / (h * 32.0f) : 1.0f;
+            uls_s105[s] = (float)tds->uls * 8.0f;
+            ult_s105[s] = (float)tds->ult * 8.0f;
+            shift_s[s]  = gfx_tile_shift_scale(tds->shifts);
+            shift_t[s]  = gfx_tile_shift_scale(tds->shiftt);
+        }
     }
 
     for (int i = 0; i < 3; i++) {
-        float u0 = (lv[i]->u - uls_s105[0] + linear_offset) * inv_w[0];
-        float v0 = (lv[i]->v - ult_s105[0] + linear_offset) * inv_h[0];
-        float u1 = (lv[i]->u - uls_s105[1] + linear_offset) * inv_w[1];
-        float v1 = (lv[i]->v - ult_s105[1] + linear_offset) * inv_h[1];
+        float u0 = (lv[i]->u * shift_s[0] - uls_s105[0] + linear_offset) * inv_w[0];
+        float v0 = (lv[i]->v * shift_t[0] - ult_s105[0] + linear_offset) * inv_h[0];
+        float u1 = (lv[i]->u * shift_s[1] - uls_s105[1] + linear_offset) * inv_w[1];
+        float v1 = (lv[i]->v * shift_t[1] - ult_s105[1] + linear_offset) * inv_h[1];
+        float z = lv[i]->z;
+
+        if (g_rdp.loaded[0].framebuffer_copy) {
+            v0 = 1.0f - v0;
+        }
+        if (g_rdp.loaded[1].framebuffer_copy) {
+            v1 = 1.0f - v1;
+        }
+
+        if (g_rdp.other_mode_l & G_ZS_PRIM) {
+            z = gfx_prim_depth_ndc() * lv[i]->w;
+        }
 
         gfx_buf_vbo[gfx_buf_vbo_len++] = lv[i]->x;
         gfx_buf_vbo[gfx_buf_vbo_len++] = lv[i]->y;
-        gfx_buf_vbo[gfx_buf_vbo_len++] = lv[i]->z;
+        gfx_buf_vbo[gfx_buf_vbo_len++] = z;
         gfx_buf_vbo[gfx_buf_vbo_len++] = lv[i]->w;
         gfx_buf_vbo[gfx_buf_vbo_len++] = u0;
         gfx_buf_vbo[gfx_buf_vbo_len++] = v0;
@@ -1124,7 +1220,7 @@ static void gfx_rdp_set_other_mode_h(const Gfx *cmd) {
                 (new_omh >> G_MDSFT_CYCLETYPE) & 3,
                 shift, count, (u32)cmd->words.w1, (int)gfx_buf_vbo_num_tris);
     }
-    // Cycle type is uploaded at flush time.
+
     if ((new_omh ^ g_rdp.other_mode_h) & (3u << G_MDSFT_CYCLETYPE)) {
         gfx_flush();
     }
@@ -1155,8 +1251,10 @@ static void gfx_rdp_set_tile(const Gfx *cmd) {
     u8  palette = (u8)C1(20, 4);
     u8  cmt  = (u8)C1(18, 2);
     u8  maskt = (u8)C1(14, 4);
+    u8  shiftt = (u8)C1(10, 4);
     u8  cms  = (u8)C1(8,  2);
     u8  masks = (u8)C1(4,  4);
+    u8  shifts = (u8)C1(0,  4);
 
     g_rdp.tile[tile].fmt         = fmt;
     g_rdp.tile[tile].siz         = siz;
@@ -1167,6 +1265,8 @@ static void gfx_rdp_set_tile(const Gfx *cmd) {
     g_rdp.tile[tile].cmt         = cmt;
     g_rdp.tile[tile].masks       = masks;
     g_rdp.tile[tile].maskt       = maskt;
+    g_rdp.tile[tile].shifts      = shifts;
+    g_rdp.tile[tile].shiftt      = shiftt;
 
     if (tile == G_TX_LOADTILE) {
         g_rdp.tex_to_load.tmem_offset = tmem;
@@ -1217,7 +1317,6 @@ static void gfx_rdp_load_tile(const Gfx *cmd) {
     u32 h    = (lrt - ult) / 4u + 1u;
     u32 img_w = g_rdp.tex_to_load.width;
 
-    // LoadTile can copy a sub-rectangle from a wider source image.
     u32 row_bytes = (img_w > 0)
         ? texels_to_bytes(g_rdp.tex_to_load.siz, img_w)
         : texels_to_bytes(g_rdp.tex_to_load.siz, w);
@@ -1225,7 +1324,6 @@ static void gfx_rdp_load_tile(const Gfx *cmd) {
     u32 tile_row_bytes = texels_to_bytes(g_rdp.tex_to_load.siz, w);
     u32 byte_offset = src_y * row_bytes + leading_bytes;
 
-    // Pre-fill dimensions from the LoadTile rect; SetTileSize will override them.
     gfx_store_tmem_load(g_rdp.tex_to_load.tmem_offset,
                         g_rdp.tex_to_load.addr + byte_offset,
                         tile_row_bytes * h, row_bytes,
@@ -1313,10 +1411,7 @@ static void gfx_rdp_load_tlut(const Gfx *cmd) {
     }
 }
 
-// Convert U10.2 rectangle coordinates to NDC, build four corner vertices at
-// GFX_MAX_VERTICES+0..3, draw two triangles, then flush before restoring state.
-// Callers are responsible for setting u/v and r/g/b/a on the corner vertices and
-// for saving/restoring any combiner state they override.
+// Convert U10.2 rectangle coordinates to NDC
 static void gfx_draw_rectangle(s32 ulx, s32 uly, s32 lrx, s32 lry) {
     u32 saved_omh  = g_rdp.other_mode_h;
     u32 cycle_type = g_rdp.other_mode_h & (3u << G_MDSFT_CYCLETYPE);
@@ -1339,7 +1434,6 @@ static void gfx_draw_rectangle(s32 ulx, s32 uly, s32 lrx, s32 lry) {
     lr->x = lrxf; lr->y = lryf; lr->z = -1.0f; lr->w = 1.0f; lr->clip_rej = 0;
     ur->x = lrxf; ur->y = ulyf; ur->z = -1.0f; ur->w = 1.0f; ur->clip_rej = 0;
 
-    // Use the full window viewport and no culling/fog for 2D rects.
     float saved_vp[4];
     memcpy(saved_vp, &g_rdp.viewport, sizeof(saved_vp));
     u32 saved_geom = g_rsp.geometry_mode;
@@ -1348,12 +1442,13 @@ static void gfx_draw_rectangle(s32 ulx, s32 uly, s32 lrx, s32 lry) {
     g_rdp.viewport.w = (float)gl_window_width;
     g_rdp.viewport.h = (float)gl_window_height;
     g_rdp.viewport_dirty = true;
-    g_rsp.geometry_mode = 0;
+
+    // Rectangles have no per-vertex depth
+    g_rsp.geometry_mode = (g_rdp.other_mode_l & G_ZS_PRIM) ? (saved_geom & G_ZBUFFER) : 0;
 
     gfx_sp_tri1(GFX_MAX_VERTICES + 0, GFX_MAX_VERTICES + 1, GFX_MAX_VERTICES + 3);
     gfx_sp_tri1(GFX_MAX_VERTICES + 1, GFX_MAX_VERTICES + 2, GFX_MAX_VERTICES + 3);
-    // Flush now so the combiner/use_tex uniforms captured at draw time match this
-    // rect's state, not whatever the caller restores afterward.
+
     gfx_flush();
 
     g_rsp.geometry_mode = saved_geom;
@@ -1384,10 +1479,8 @@ static void gfx_dp_texture_rectangle(s32 ulx, s32 uly, s32 lrx, s32 lry,
     if ((g_rdp.other_mode_h & (3u << G_MDSFT_CYCLETYPE)) == G_CYC_COPY) {
         // COPY mode: 4 texels/pixel → divide step by 4 to get 1:1 mapping.
         dsdx >>= 2;
-        // Force output = texel0 (combiner disabled in COPY mode).
         g_rdp.cc_rgb_a = 5; g_rdp.cc_rgb_b = 5; g_rdp.cc_rgb_c = 5; g_rdp.cc_rgb_d = 0;
         g_rdp.cc_a_a   = 5; g_rdp.cc_a_b   = 5; g_rdp.cc_a_c   = 5; g_rdp.cc_a_d   = 0;
-        // Off-by-one edge rule: add 1 pixel in U10.2.
         lrx += 1 << 2;
         lry += 1 << 2;
     }
@@ -1467,9 +1560,9 @@ static void gfx_rdp_fill_rect(const Gfx *cmd) {
         g_rdp.cc_rgb_a = 5; g_rdp.cc_rgb_b = 5; g_rdp.cc_rgb_c = 5; g_rdp.cc_rgb_d = 2;
         g_rdp.cc_a_a   = 5; g_rdp.cc_a_b   = 5; g_rdp.cc_a_c   = 5; g_rdp.cc_a_d   = 2;
     } else {
-        ul->r = ll->r = lr->r = ur->r = 255;
-        ul->g = ll->g = lr->g = ur->g = 255;
-        ul->b = ll->b = lr->b = ur->b = 255;
+        ul->r = ll->r = lr->r = ur->r = 0;
+        ul->g = ll->g = lr->g = ur->g = 0;
+        ul->b = ll->b = lr->b = ur->b = 0;
         ul->a = ll->a = lr->a = ur->a = 255;
     }
 
@@ -1481,9 +1574,7 @@ static void gfx_rdp_fill_rect(const Gfx *cmd) {
     g_rdp.cc_a_c   = saved_cc[6]; g_rdp.cc_a_d   = saved_cc[7];
 }
 
-// cmd points to the G_TEXRECT entry. PC-generated gDPTextureRectangle stores
-// s/t and dsdx/dtdy in the next Gfx, while gSPTextureRectangle emits them as
-// RDPHALF_1 and RDPHALF_2 commands.
+// cmd points to the G_TEXRECT entry
 static int gfx_rdp_tex_rect(const Gfx *raw_cmd, int stride) {
     int dummy;
     Gfx texrect = gbi_read_cmd(raw_cmd, &dummy);
@@ -1554,7 +1645,6 @@ static void gfx_rdp_set_env_color(const Gfx *cmd) {
 
 // gDPSetPrimColor also encodes minlevel (w0[15:8]) and lodfrac (w0[7:0]);
 // those affect LOD blending and are ignored on the first pass.
-// Color registers are uploaded at flush time.
 static void gfx_rdp_set_prim_color(const Gfx *cmd) {
     gfx_flush();
     g_rdp.prim_r = (u8)(cmd->words.w1 >> 24);
@@ -1575,8 +1665,12 @@ static void gfx_rdp_set_fog_color(const Gfx *cmd) {
     g_rdp.fog_a = (u8)(cmd->words.w1);
 }
 
-// Fill colour is two packed 16-bit RGBA5551 values (for 16-bit framebuffers).
-// Decode the lower copy and copy to the upper
+static void gfx_rdp_set_prim_depth(const Gfx *cmd) {
+    g_rdp.prim_depth = (u16)(cmd->words.w1 >> 16);
+    g_rdp.prim_depth_delta = (u16)(cmd->words.w1 & 0xFFFF);
+}
+
+// Fill colour is two packed 16-bit RGBA5551 values
 static void gfx_rdp_set_fill_color(const Gfx *cmd) {
     u16 packed = (u16)(cmd->words.w1 & 0xFFFF);
     u8  r5 = (u8)((packed >> 11) & 0x1F);
@@ -1590,7 +1684,7 @@ static void gfx_rdp_set_fill_color(const Gfx *cmd) {
     g_rdp.fill_a = a1 ? 0xFF : 0x00;
 }
 
-// Decoded mux names for diagnostic output.
+// Decoded mux names for debug output
 static const char *cc_rgb_mux_name(int mux) {
     switch (mux) {
         case 0:  return "COMBINED";
@@ -1627,7 +1721,7 @@ static const char *cc_alpha_mux_name(int mux) {
     }
 }
 
-// Print each combiner tuple once.
+// Print each combiner tuple once
 static u64 cc_seen[64];
 static int cc_seen_count = 0;
 
@@ -1649,19 +1743,8 @@ static void cc_log_if_new(int rgb_a, int rgb_b, int rgb_c, int rgb_d,
 }
 
 static void gfx_rdp_set_combine(const Gfx *cmd) {
-    // Keep pending triangles on the combiner they were issued under.
     gfx_flush();
 
-    // Decode cycle-0 sub-fields from the GCCc bit layout:
-    //   w0[23:20] rgb_a  (saRGB0, 4-bit)
-    //   w0[19:15] rgb_c  (mRGB0,  5-bit)
-    //   w0[14:12] a_a    (saA0,   3-bit)
-    //   w0[11:9]  a_c    (mA0,    3-bit)
-    //   w1[31:28] rgb_b  (sbRGB0, 4-bit)
-    //   w1[17:15] rgb_d  (aRGB0,  3-bit)
-    //   w1[14:12] a_b    (sbA0,   3-bit)
-    //   w1[11:9]  a_d    (aA0,    3-bit)
-    // Cycle-1 fields are skipped
     int rgb_a = (int)((cmd->words.w0 >> 20) & 0xF);
     int rgb_c = (int)((cmd->words.w0 >> 15) & 0x1F);
     int a_a   = (int)((cmd->words.w0 >> 12) & 0x7);
@@ -1876,11 +1959,6 @@ void gbi_run_dl(Gfx *dl) {
                 }
                 bool is_push = (C0(16, 8) == G_DL_PUSH);
 
-                // A target that resolves into collision memory (or is otherwise
-                // unreadable) is a bad guest pointer, not geometry. Drop the
-                // call instead of walking non-command data into a crash: a PUSH
-                // continues past the gSPDisplayList, a branch (NOPUSH) ends the
-                // current list like an implicit gsSPEndDisplayList.
                 if (!gfx_dl_target_renderable(target)) {
                     if (is_push) {
                         cmd = (Gfx *)((u8 *)raw_cmd + stride);
@@ -1912,8 +1990,6 @@ void gbi_run_dl(Gfx *dl) {
                 continue;
 
             // RDPHALF_1/2 encode the s/t and dsdx/dtdy for texture rectangles.
-            // They are normally consumed by the G_TEXRECT handler below; these
-            // cases handle the rare situation where they appear out of context.
             case G_RDPHALF_1:
                 g_rsp.saved_uls = (u16)(cmd->words.w1 >> 16);
                 g_rsp.saved_ult = (u16)(cmd->words.w1 & 0xFFFFu);
@@ -1935,7 +2011,6 @@ void gbi_run_dl(Gfx *dl) {
                             (u8)((tri & 0xFF) / 2));
                 break;
             }
-            // G_TRI2 and G_QUAD both encode two triangles: first in w0, second in w1.
             case G_TRI2:
             case G_QUAD:
                 gfx_sp_tri1((u8)(C0(16, 8) / 2), (u8)(C0(8, 8) / 2), (u8)(C0(0, 8) / 2));
@@ -1981,9 +2056,10 @@ void gbi_run_dl(Gfx *dl) {
                 gfx_flush();
                 break;
 
+            case G_SETPRIMDEPTH:   gfx_rdp_set_prim_depth(cmd);   break;
+
             case G_LINE3D:
             case G_LOAD_UCODE:
-            case G_SETPRIMDEPTH:
                 break;
 
             default:
