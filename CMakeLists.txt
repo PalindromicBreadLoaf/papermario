@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(papermario_pc VERSION 0.1.0 LANGUAGES C ASM)
 
 # CMake is exclusively used for the PC build.
+# Please use the original repo for building the N64 game from source.
 option(BUILD_PC "Build the PC port" ON)
 
 if(NOT BUILD_PC)
@@ -65,10 +66,9 @@ add_compile_definitions(
     AVOID_UB
 )
 
-# Collect all compilable game source files
 file(GLOB_RECURSE GAME_SRC CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/*.c")
 
-# Exclude N64-only directories
+# Exclude N64-specific directories
 list(FILTER GAME_SRC EXCLUDE REGEX ".*/src/os/.*")
 list(FILTER GAME_SRC EXCLUDE REGEX ".*/src/pc/.*")
 list(FILTER GAME_SRC EXCLUDE REGEX ".*/src/boot/.*")
@@ -76,7 +76,7 @@ list(FILTER GAME_SRC EXCLUDE REGEX ".*/src/gcc/.*")
 list(FILTER GAME_SRC EXCLUDE REGEX ".*/src/world/dead/.*")
 list(FILTER GAME_SRC EXCLUDE REGEX ".*\\.inc\\.c$")
 
-# Exclude PAL-only locale files (German, French, Spanish)
+# Exclude PAL-only locale files
 # TODO: Expand beyond US-only build
 list(FILTER GAME_SRC EXCLUDE REGEX ".*_de\\.c$")
 list(FILTER GAME_SRC EXCLUDE REGEX ".*_fr\\.c$")
@@ -125,7 +125,7 @@ if(INCLUDED_GAME_SRC)
     list(REMOVE_ITEM GAME_SRC ${INCLUDED_GAME_SRC})
 endif()
 
-# These are included by parent translation units and are not valid standalone sources
+# Already included by parent translation units
 list(FILTER GAME_SRC EXCLUDE REGEX ".*/src/effects/effect_table\\.c$")
 list(FILTER GAME_SRC EXCLUDE REGEX ".*/src/world/area_dro/dro_01/npc_composer\\.c$")
 list(FILTER GAME_SRC EXCLUDE REGEX ".*/src/world/area_dro/dro_01/npc_hint_dryite\\.c$")
@@ -136,9 +136,6 @@ set_source_files_properties(${GAME_SRC} PROPERTIES
     COMPILE_DEFINITIONS "PC_GAME_SOURCE"
 )
 
-# BSS files define N64 layout-ordered zero-init globals for the N64 linker script.
-# On PC, the real definitions come from the game source files.
-# Compiling bss files with M2CTX makes BSS=static so every symbol is file-local
 file(GLOB BSS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/bss/*.c")
 set_source_files_properties(${BSS_SOURCES} PROPERTIES
     COMPILE_DEFINITIONS "M2CTX"
@@ -190,7 +187,6 @@ set(PC_WIDE_CONSTANT_INIT_SRC
     ${CMAKE_SOURCE_DIR}/src/filemenu/filemenu_msg.c
     ${CMAKE_SOURCE_DIR}/src/global_hud_scripts.c
     ${CMAKE_SOURCE_DIR}/src/hud_element.c
-    ${CMAKE_SOURCE_DIR}/src/item_entity.c
     ${CMAKE_SOURCE_DIR}/src/level_up.c
     ${CMAKE_SOURCE_DIR}/src/starpoint.c
     ${CMAKE_SOURCE_DIR}/src/starpoint_en.c
@@ -284,7 +280,7 @@ target_sources(papermario PRIVATE
     ${GAME_SRC}
 )
 
-# Pass absolute asset paths for .incbin in include_asset.h (must come after add_executable)
+# Pass absolute asset paths for .incbin in include_asset.h
 target_compile_definitions(papermario PRIVATE
     "PC_ASSET_DIR=\"${CMAKE_SOURCE_DIR}/ver/us/build\""
     "PC_RAW_ASSET_DIR=\"${CMAKE_SOURCE_DIR}/ver/us/build/assets/us\""
@@ -328,14 +324,12 @@ target_link_libraries(papermario PRIVATE
     m
 )
 
-# SDL2::SDL2main provides the WinMain→main shim on Windows; Not needed on good OSes.
+# SDL2::SDL2main provides the WinMain->main shim on Windows; Not needed on good OSes.
 if(TARGET SDL2::SDL2main)
     target_link_libraries(papermario PRIVATE SDL2::SDL2main)
 endif()
 
 # Wrap dma_copy/dma_write with PC implementations from dma_wrap_pc.c.
-# Redirect (s32) pointer casts in game script arrays to stay in low 32-bit address
-# space by building non-PIE so BSS/text addresses always fit in a 32-bit integer.
 if(NOT MSVC)
     target_link_options(papermario PRIVATE
         -no-pie
