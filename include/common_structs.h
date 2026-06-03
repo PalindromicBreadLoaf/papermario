@@ -1194,8 +1194,8 @@ typedef struct ItemEntity {
     /* 0x1E */ s16 spawnAngle; /* if < 0, a random screen-relative angle is chosen: left or right */
     /* 0x20 */ s16 shadowIndex;
     /* 0x22 */ char unk_22[2];
-    /* 0x24 */ u32* readPos;
-    /* 0x28 */ u32* savedReadPos;
+    /* 0x24 */ Bytecode* readPos;
+    /* 0x28 */ Bytecode* savedReadPos;
     /* 0x2C */ u8 lookupRasterIndex;
     /* 0x2D */ u8 lookupPaletteIndex;
     /* 0x2E */ u8 nextUpdate;
@@ -1204,9 +1204,9 @@ typedef struct ItemEntity {
     /* 0x34 */ Vec3s lastPos;
     /* 0x3A */ char unk_3A[2];
     /* 0x3C */ s32 sparkleNextUpdate;
-    /* 0x40 */ s32* sparkleReadPos;
+    /* 0x40 */ Bytecode* sparkleReadPos;
     /* 0x44 */ s32 sparkleUnk44;
-    /* 0x48 */ s32* sparkleSavedPos;
+    /* 0x48 */ Bytecode* sparkleSavedPos;
     /* 0x4C */ IMG_PTR sparkleRaster;
     /* 0x50 */ PAL_PTR sparklePalette;
     /* 0x54 */ s32 sparkleWidth;

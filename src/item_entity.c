@@ -120,14 +120,38 @@ s16 PickupHeaderWindowHeight[] = { 32, 40 };
 s16 PickupMessageWindowYOffsets[] = { 8, 4 };
 #endif
 
+#ifdef BUILD_PC
+#define item_entity_set_window_update(windowID, callback) \
+    item_entity_set_window_update_func(windowID, (WindowUpdateFunc){ .func = (callback) })
+
+static void item_entity_set_window_update_func(s32 windowID, WindowUpdateFunc pendingFunc) {
+    if (gWindows[windowID].flags & WINDOW_FLAG_INITIALIZED) {
+        if (pendingFunc.func == gWindows[windowID].fpUpdate.func) {
+            gWindows[windowID].flags &= ~WINDOW_FLAG_FPUPDATE_CHANGED;
+        } else {
+            gWindows[windowID].flags |= WINDOW_FLAG_FPUPDATE_CHANGED | WINDOW_FLAG_INITIAL_ANIMATION;
+            gWindows[windowID].fpPending = pendingFunc;
+        }
+    }
+}
+#else
+#define item_entity_set_window_update(windowID, func) set_window_update(windowID, (s32)(func))
+#endif
+
+#ifdef BUILD_PC
+#define ITEM_ENTITY_ICON_ROM_START ((u32)(uintptr_t)icon_ROM_START)
+#else
+#define ITEM_ENTITY_ICON_ROM_START ((s32)icon_ROM_START)
+#endif
+
 void sparkle_script_init(ItemEntity* item, SparkleScript* script) {
-    item->sparkleReadPos = (s32*)script;
+    item->sparkleReadPos = (Bytecode*)script;
     item->sparkleNextUpdate = 1;
-    item->sparkleSavedPos = (s32*)script;
+    item->sparkleSavedPos = (Bytecode*)script;
 }
 
 s32 sparkle_script_step(ItemEntity* item) {
-    s32* readPos = item->sparkleReadPos;
+    Bytecode* readPos = item->sparkleReadPos;
 
     switch (*readPos++) {
         case SPARKLE_OP_SetGfx:
@@ -285,10 +309,10 @@ void init_item_entity_list(void) {
     ItemEntityAlternatingSpawn = 0;
 }
 
-extern s32* gItemEntityScripts[];
+extern Bytecode* gItemEntityScripts[];
 
 void item_entity_load(ItemEntity* item) {
-    s32* pos;
+    Bytecode* pos;
     HudCacheEntry* entry;
     s32 cond;
     s32 raster;
@@ -325,7 +349,7 @@ void item_entity_load(ItemEntity* item) {
                         entry->data = &gHudElementCacheBuffer[*gHudElementCacheSize];
 
                         ASSERT(*gHudElementCacheSize + size < 0x11000);
-                        nuPiReadRom((s32)icon_ROM_START + raster, entry->data, size);
+                        nuPiReadRom(ITEM_ENTITY_ICON_ROM_START + raster, entry->data, size);
                         *gHudElementCacheSize += size;
                         if (gGameStatusPtr->context == CONTEXT_WORLD) {
                             *pos = i;
@@ -358,7 +382,7 @@ void item_entity_load(ItemEntity* item) {
                         entry->id = palette;
                         entry->data = &gHudElementCacheBuffer[*gHudElementCacheSize];
                         ASSERT(*gHudElementCacheSize + 0x20 < 0x11000);
-                        nuPiReadRom((s32)icon_ROM_START + palette, entry->data, 0x20);
+                        nuPiReadRom(ITEM_ENTITY_ICON_ROM_START + palette, entry->data, 0x20);
                         *gHudElementCacheSize += 0x20;
                         if (gGameStatusPtr->context == CONTEXT_WORLD) {
                             *pos = i;
@@ -773,7 +797,7 @@ s32 make_item_entity_at_player(s32 itemID, s32 category, s32 pickupMsgFlags) {
 }
 
 void item_entity_update(ItemEntity* entity) {
-    s32* args;
+    Bytecode* args;
     s32 max, threshold;
 
     entity->nextUpdate--;
@@ -2229,9 +2253,9 @@ block_47: // TODO required to match
             }
             if (item->state == ITEM_PICKUP_STATE_SHOW_TOO_MANY) {
                 func_801363A0(item);
-                set_window_update(WIN_PICKUP_HEADER, (s32) basic_window_update);
-                set_window_update(WIN_POPUP_TITLE_B, (s32) basic_window_update);
-                set_window_update(WIN_POPUP_DESC, (s32) basic_window_update);
+                item_entity_set_window_update(WIN_PICKUP_HEADER, basic_window_update);
+                item_entity_set_window_update(WIN_POPUP_TITLE_B, basic_window_update);
+                item_entity_set_window_update(WIN_POPUP_DESC, basic_window_update);
             }
             increment_status_bar_disabled();
             ItemPickupStateDelay = 10;
@@ -2290,9 +2314,9 @@ block_47: // TODO required to match
 
             if (ItemPickupStateDelay == 6) {
                 func_801363A0(item);
-                set_window_update(WIN_PICKUP_HEADER, (s32) basic_window_update);
+                item_entity_set_window_update(WIN_PICKUP_HEADER, basic_window_update);
                 if (item->itemID != ITEM_STAR_PIECE && item->itemID != ITEM_COIN) {
-                    set_window_update(WIN_POPUP_DESC, (s32) basic_window_update);
+                    item_entity_set_window_update(WIN_POPUP_DESC, basic_window_update);
                 }
             }
 
@@ -2316,8 +2340,8 @@ block_47: // TODO required to match
                 if (gItemTable[item->itemID].typeFlags & ITEM_TYPE_FLAG_GEAR) {
                     ItemPickupGotOutline->data.gotItemOutline->timeLeft = 10;
                 }
-                set_window_update(WIN_PICKUP_HEADER, (s32) basic_hidden_window_update);
-                set_window_update(WIN_POPUP_DESC, (s32) basic_hidden_window_update);
+                item_entity_set_window_update(WIN_PICKUP_HEADER, basic_hidden_window_update);
+                item_entity_set_window_update(WIN_POPUP_DESC, basic_hidden_window_update);
                 item->state = ITEM_PICKUP_STATE_HIDE_GOT_ITEM;
             }
             break;
@@ -2402,8 +2426,8 @@ block_47: // TODO required to match
                 menu->numEntries = numEntries;
                 menu->initialPos = 0;
                 create_standard_popup_menu(menu);
-                set_window_update(WIN_PICKUP_HEADER, (s32) basic_hidden_window_update);
-                set_window_update(WIN_POPUP_TITLE_B, (s32) basic_hidden_window_update);
+                item_entity_set_window_update(WIN_PICKUP_HEADER, basic_hidden_window_update);
+                item_entity_set_window_update(WIN_POPUP_TITLE_B, basic_hidden_window_update);
                 ItemPickupStateDelay = 0;
                 item->state = ITEM_PICKUP_STATE_HIDE_TOO_MANY;
             }
@@ -2449,14 +2473,14 @@ block_47: // TODO required to match
                 }
                 suggest_player_anim_always_forward(ANIM_MarioW1_Lift);
                 func_801363A0(item);
-                set_window_update(WIN_PICKUP_HEADER, (s32) basic_window_update);
+                item_entity_set_window_update(WIN_PICKUP_HEADER, basic_window_update);
                 ItemPickupStateDelay = 50;
                 item->state = ITEM_PICKUP_STATE_SHOW_THREW_AWAY;
             }
             break;
         case ITEM_PICKUP_STATE_SHOW_THREW_AWAY:
             if (gGameStatusPtr->pressedButtons[0] & BUTTON_A) {
-                set_window_update(WIN_PICKUP_HEADER, (s32) basic_hidden_window_update);
+                item_entity_set_window_update(WIN_PICKUP_HEADER, basic_hidden_window_update);
                 item->state = ITEM_PICKUP_STATE_HIDE_THREW_AWAY;
             }
             break;
